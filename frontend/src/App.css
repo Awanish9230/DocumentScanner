@@ -1,0 +1,118 @@
+/* ------------------------------------------
+   GLOBAL CONTAINER
+------------------------------------------- */
+#root {
+  max-width: 1280px;
+  margin: 0 auto;
+  padding: 2rem;
+  text-align: left;
+  transition: background 0.3s ease, color 0.3s ease;
+}
+
+/* Light Mode */
+:root {
+  --bg: #ffffff;       /* WHITE BACKGROUND */
+  --text: #1a1a1a;
+  --card-bg: #f7f7f7;
+  --border: #dcdcdc;
+}
+
+/* Dark Mode */
+.dark-mode {
+  --bg: #0f0f0f;
+  --text: #eaeaea;
+  --card-bg: #1a1a1a;
+  --border: #333333;
+}
+
+body {
+  background: var(--bg);
+  color: var(--text);
+  transition: background 0.3s ease, color 0.3s ease;
+  font-family: Inter, system-ui, Avenir, Helvetica, Arial, sans-serif;
+}
+
+/* ------------------------------------------
+   LOGO STYLES
+------------------------------------------- */
+.logo {
+  height: 6em;
+  padding: 1.5em;
+  will-change: filter, transform;
+  transition: filter 300ms, transform 200ms;
+}
+
+.logo:hover {
+  filter: drop-shadow(0 0 2em #646cffaa);
+  transform: scale(1.05);
+}
+
+.logo.react:hover {
+  filter: drop-shadow(0 0 2em #61dafbaa);
+}
+
+/* Logo Spin Animation */
+@keyframes logo-spin {
+  from { transform: rotate(0deg); }
+  to { transform: rotate(360deg); }
+}
+
+@media (prefers-reduced-motion: no-preference) {
+  a:nth-of-type(2) .logo {
+    animation: logo-spin infinite 20s linear;
+  }
+}
+
+/* ------------------------------------------
+   CARD COMPONENT
+------------------------------------------- */
+.card {
+  padding: 1.5rem 2rem;
+  background: var(--card-bg);
+  border-radius: 16px;
+  border: 1px solid var(--border);
+  box-shadow: 0px 4px 12px rgba(0, 0, 0, 0.08);
+  transition: background 0.3s ease, border 0.3s ease, transform 0.2s ease;
+}
+
+.card:hover {
+  transform: translateY(-3px);
+  box-shadow: 0px 6px 20px rgba(0, 0, 0, 0.12);
+}
+
+/* ------------------------------------------
+   UTILITY TEXT
+------------------------------------------- */
+.read-the-docs {
+  color: #888;
+  font-size: 0.9rem;
+}
+
+/* Dark Mode Adjustments */
+.dark-mode .read-the-docs {
+  color: #bbbbbb;
+}
+
+/* ------------------------------------------
+   BUTTON IMPROVED UI
+------------------------------------------- */
+button {
+  padding: 0.7rem 1.4rem;
+  font-size: 1rem;
+  font-weight: 600;
+  border-radius: 10px;
+  border: 1px solid var(--border);
+  cursor: pointer;
+  background: #646cff;
+  color: white;
+  transition: background 0.3s ease, transform 0.2s ease;
+}
+
+button:hover {
+  background: #4e53e3;
+  transform: translateY(-2px);
+}
+
+button:active {
+  transform: scale(0.97);
+}

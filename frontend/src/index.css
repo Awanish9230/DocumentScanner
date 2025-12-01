@@ -1,0 +1,107 @@
+/* 1. Google Fonts */
+
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800;900&display=swap');
+@import "tailwindcss";
+/* 2. Tailwind directives */
+/* @tailwind base;
+@tailwind components;
+@tailwind utilities; */
+
+/* 3. Custom styles */
+@layer base {
+  body {
+    background: #ffffff; /* FULL WHITE BACKGROUND */
+    font-family: 'Inter', sans-serif;
+    min-height: 100vh;
+    color: #1a1a1a; /* dark text */
+  }
+}
+
+@layer components {
+
+  /* CARD */
+  .glass-card {
+    background: #ffffff;
+    border: 1px solid #e5e7eb;
+    border-radius: 1rem;
+    box-shadow: 0 10px 40px rgba(0,0,0,0.08);
+  }
+
+  /* GRADIENT TEXT */
+  .gradient-text {
+    background: linear-gradient(to right, #3b82f6, #8b5cf6, #ec4899);
+    -webkit-background-clip: text;
+    background-clip: text;
+    color: transparent;
+  }
+
+  /* BUTTONS */
+  .btn-primary {
+    @apply text-white font-semibold py-3 px-6 rounded-lg transition-all;
+    background: linear-gradient(to right, #3b82f6, #8b5cf6);
+    box-shadow: 0 10px 20px -5px rgba(0,0,0,0.15);
+  }
+  .btn-primary:hover {
+    background: linear-gradient(to right, #2563eb, #7c3aed);
+    transform: scale(1.05);
+    box-shadow: 0 15px 30px -5px rgba(0,0,0,0.25);
+  }
+
+  .btn-secondary {
+    @apply text-white font-semibold py-3 px-6 rounded-lg transition-all;
+    background: linear-gradient(to right, #10b981, #059669);
+    box-shadow: 0 10px 20px -5px rgba(0,0,0,0.15);
+  }
+  .btn-secondary:hover {
+    background: linear-gradient(to right, #059669, #047857);
+    transform: scale(1.05);
+    box-shadow: 0 15px 30px -5px rgba(0,0,0,0.25);
+  }
+
+  /* INPUT FIELDS */
+  .input-field {
+    @apply w-full p-3 rounded-md border border-gray-300 bg-gray-100 text-gray-900 transition-all;
+  }
+  .input-field:focus {
+    @apply ring-2 ring-purple-400 border-transparent bg-white outline-none;
+  }
+  .input-field::placeholder {
+    color: #9ca3af;
+  }
+
+  /* FLOAT ANIMATION */
+  .floating-animation {
+    animation: float 6s ease-in-out infinite;
+  }
+  @keyframes float {
+    0%, 100% { transform: translateY(0); }
+    50% { transform: translateY(-18px); }
+  }
+
+  /* PULSE GLOW */
+  .pulse-glow {
+    animation: pulse-glow 2.5s ease-in-out infinite;
+  }
+  @keyframes pulse-glow {
+    0%, 100% { box-shadow: 0 0 25px rgba(139,92,246,0.4); }
+    50% { box-shadow: 0 0 45px rgba(139,92,246,0.6); }
+  }
+
+  /* FADE-IN ANIMATION */
+  .animate-fade-in {
+    animation: fadeIn 1s ease-out;
+  }
+  .animate-fade-in-delay {
+    animation: fadeIn 1s ease-out 0.35s backwards;
+  }
+  @keyframes fadeIn {
+    0% { opacity: 0; transform: translateY(18px); }
+    100% { opacity: 1; transform: translateY(0); }
+  }
+
+  /* FOOTER LINKS */
+  .footer-link {
+    @apply text-gray-700 hover:text-purple-700 font-medium transition-colors;
+  }
+
+}
