@@ -7,9 +7,18 @@ from transformers import TrOCRProcessor, VisionEncoderDecoderModel
 import torch
 
 def load_model():
-    processor = TrOCRProcessor.from_pretrained('microsoft/trocr-base-printed')
-    model = VisionEncoderDecoderModel.from_pretrained('microsoft/trocr-base-printed')
-    return processor, model
+    # Use a larger TrOCR variant for better accuracy when possible
+    model_name = 'microsoft/trocr-large-printed'
+    try:
+        processor = TrOCRProcessor.from_pretrained(model_name)
+        model = VisionEncoderDecoderModel.from_pretrained(model_name)
+    except Exception:
+        # fallback to smaller model if large not available in environment
+        processor = TrOCRProcessor.from_pretrained('microsoft/trocr-base-printed')
+        model = VisionEncoderDecoderModel.from_pretrained('microsoft/trocr-base-printed')
+    device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+    model.to(device)
+    return processor, model, device
 
 def preprocess_image(image_path):
     # Load image
@@ -38,11 +47,12 @@ def preprocess_image(image_path):
     return img, lines
 
 def extract_text(image_path):
-    processor, model = load_model()
+    processor, model, device = load_model()
     img, lines = preprocess_image(image_path)
     
     extracted_data = {}
     full_text = []
+    lines_out = []
     
     for i, (x, y, w, h) in enumerate(lines):
         # Crop the line
@@ -50,12 +60,34 @@ def extract_text(image_path):
         rgb_crop = cv2.cvtColor(crop, cv2.COLOR_BGR2RGB)
         pil_img = Image.fromarray(rgb_crop)
         
-        # OCR
-        pixel_values = processor(images=pil_img, return_tensors="pt").pixel_values
-        generated_ids = model.generate(pixel_values)
+        # OCR - generate with scores so we can compute token-level confidence
+        inputs = processor(images=pil_img, return_tensors="pt").pixel_values.to(device)
+        outputs = model.generate(inputs, return_dict_in_generate=True, output_scores=True)
+        generated_ids = outputs.sequences
         text = processor.batch_decode(generated_ids, skip_special_tokens=True)[0]
-        
+
+        # compute per-token probabilities from scores (softmax)
+        token_probs = []
+        if hasattr(outputs, 'scores') and outputs.scores is not None:
+            # outputs.scores is a list of tensors each shape (batch, vocab)
+            # generated_ids shape: (batch, seq_len)
+            seq = generated_ids[0].tolist()
+            # outputs.scores length = seq_len - 1 typically
+            for step_idx, score in enumerate(outputs.scores):
+                # score: tensor (batch, vocab)
+                logits = score[0]
+                probs = torch.nn.functional.softmax(logits, dim=-1)
+                # predicted token at this step corresponds to seq[step_idx + 1]
+                token_id = seq[step_idx + 1] if step_idx + 1 < len(seq) else None
+                if token_id is not None:
+                    p = probs[token_id].item()
+                    token_probs.append(p)
+
+        # average token probability as line confidence
+        line_conf = float(sum(token_probs) / len(token_probs)) if token_probs else 0.0
+
         full_text.append(text)
+        lines_out.append({'text': text, 'confidence': round(line_conf * 100, 2)})
         
         # Simple heuristic mapping (very basic)
         lower_text = text.lower()
@@ -67,7 +99,12 @@ def extract_text(image_path):
             extracted_data["id_number"] = text.split(":")[-1].strip()
             
     # Fallback if fields not found, just put raw text in a generic field
+    extracted_data['lines'] = lines_out
     extracted_data["raw_text"] = "\n".join(full_text)
+
+    # compute overall average confidence
+    confidences = [l['confidence'] for l in lines_out if isinstance(l.get('confidence'), (int, float))]
+    extracted_data['average_confidence'] = round(sum(confidences) / len(confidences), 2) if confidences else 0.0
     
     return extracted_data
 

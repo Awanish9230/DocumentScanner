@@ -1,6 +1,33 @@
 import React, { useState, useEffect } from 'react';
 
-const Header = () => {
+const ProfileMenu = ({ user, onLogout, onOpenDocs }) => {
+    const [open, setOpen] = useState(false);
+
+    const initials = (user && (user.name || user.email)) ? (user.name ? user.name.split(' ').map(n => n[0]).slice(0,2).join('') : user.email[0].toUpperCase()) : '?';
+
+    return (
+        <div className="relative inline-block text-left">
+            <button onClick={() => setOpen(v => !v)} className="w-10 h-10 rounded-full bg-gradient-to-br from-blue-500 to-purple-600 text-white flex items-center justify-center font-semibold shadow-md focus:outline-none">
+                {initials}
+            </button>
+
+            {open && (
+                <div className="absolute right-0 mt-2 w-56 bg-white border border-gray-200 rounded-lg shadow-lg z-50 py-3">
+                    <div className="px-4 py-2 border-b border-gray-100">
+                        <div className="font-semibold text-gray-800">{user.name || user.email}</div>
+                        <div className="text-xs text-gray-500">{user.email}</div>
+                    </div>
+                    <div className="py-2">
+                        <button onClick={() => { onOpenDocs && onOpenDocs(); setOpen(false); }} className="w-full text-left px-4 py-2 hover:bg-gray-50 text-sm">My Documents</button>
+                        <button onClick={() => { onLogout && onLogout(); setOpen(false); }} className="w-full text-left px-4 py-2 hover:bg-gray-50 text-sm text-red-600">Logout</button>
+                    </div>
+                </div>
+            )}
+        </div>
+    );
+};
+
+const Header = ({ authToken, user, onAuthChange, onShowMyDocs }) => {
     const [scrolled, setScrolled] = useState(false);
 
     useEffect(() => {
@@ -64,20 +91,27 @@ const Header = () => {
                         </a>
                     </nav>
 
-                    {/* CTA Button */}
-                    <div className="flex items-center space-x-4">
-                        <button
-                            className="bg-white hover:bg-yellow-300 text-purple-700 font-bold 
-                                px-6 py-2 rounded-lg transition-all duration-300 
-                                hover:scale-105 shadow-lg"
-                        >
-                            Get Started
-                        </button>
+                    {/* Profile / Auth area */}
+                    <div className="flex items-center space-x-3 relative">
+                        {!authToken && (
+                            <button
+                                onClick={() => window.dispatchEvent(new CustomEvent('openAuthModal'))}
+                                className="bg-white hover:bg-yellow-300 text-purple-700 font-bold px-4 py-2 rounded-lg transition-all duration-300 hover:scale-105 shadow-lg"
+                            >
+                                Login / Register
+                            </button>
+                        )}
+
+                        {authToken && user && (
+                            <ProfileMenu user={user} onLogout={() => onAuthChange && onAuthChange({ token: null, user: null })} onOpenDocs={() => onShowMyDocs && onShowMyDocs('mydocs')} />
+                        )}
                     </div>
                 </div>
             </div>
         </header>
     );
 };
+
+ 
 
 export default Header;

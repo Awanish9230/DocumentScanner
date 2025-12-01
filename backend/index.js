@@ -19,12 +19,22 @@ if (!fs.existsSync(uploadDir)) {
     fs.mkdirSync(uploadDir);
 }
 
+// Ensure uploads/pdfs exists for generated PDFs
+const pdfDir = path.join(__dirname, 'uploads', 'pdfs');
+if (!fs.existsSync(pdfDir)) {
+    fs.mkdirSync(pdfDir, { recursive: true });
+}
+
 // Routes
 const ocrRoutes = require('./routes/ocr');
 const verifyRoutes = require('./routes/verify');
+const authRoutes = require('./routes/auth');
+const documentRoutes = require('./routes/documents');
 
 app.use('/api/ocr', ocrRoutes);
 app.use('/api/verify', verifyRoutes);
+app.use('/api/auth', authRoutes);
+app.use('/api/documents', documentRoutes);
 
 // Database Connection
 // For demo purposes, if no MONGO_URI is provided, we'll skip DB connection or use a local one.

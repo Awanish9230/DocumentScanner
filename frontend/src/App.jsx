@@ -1,11 +1,15 @@
 import React, { useState } from 'react';
 import Header from './components/Header';
+import AuthModal from './components/AuthModal';
+import MyDocuments from './components/MyDocuments';
 import Footer from './components/Footer';
 import UploadSection from './components/UploadSection';
 import FormSection from './components/FormSection';
 import VerificationResult from './components/VerificationResult';
 
 function App() {
+  const [authToken, setAuthToken] = useState(localStorage.getItem('token') || null);
+  const [user, setUser] = useState(JSON.parse(localStorage.getItem('user') || 'null'));
   const [step, setStep] = useState('upload'); // upload, edit, verify
   const [ocrData, setOcrData] = useState(null);
   const [imagePath, setImagePath] = useState(null);
@@ -16,6 +20,25 @@ function App() {
     setOcrData(data);
     setImagePath(imgPath);
     setStep('edit');
+    // if user is logged in, save document for the user
+    if (authToken) {
+      fetch('http://localhost:5000/api/documents/save', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${authToken}` },
+        body: JSON.stringify({ title: 'OCR Extraction', ocrData: data, imagePath: imgPath })
+      }).then(res => res.json()).then(res => {
+        console.log('Saved doc', res);
+      }).catch(err => console.error('Error saving doc', err));
+    }
+  };
+
+  const setAuth = ({ token, user }) => {
+    setAuthToken(token);
+    setUser(user || null);
+    if (token) localStorage.setItem('token', token);
+    else localStorage.removeItem('token');
+    if (user) localStorage.setItem('user', JSON.stringify(user));
+    else localStorage.removeItem('user');
   };
 
   const handleVerify = async (userData) => {
@@ -45,10 +68,62 @@ function App() {
     setAverageConfidence(0);
   };
 
+  const [showAuthModal, setShowAuthModal] = useState(false);
+
+  // listen for global events from Header
+  React.useEffect(() => {
+    const open = () => setShowAuthModal(true);
+    window.addEventListener('openAuthModal', open);
+    return () => window.removeEventListener('openAuthModal', open);
+  }, []);
+
+  // if redirected back from Google OAuth, there may be a token in the url
+  React.useEffect(() => {
+    const params = new URLSearchParams(window.location.search);
+    const t = params.get('token');
+    if (t) {
+      // validate user info from backend
+      fetch('http://localhost:5000/api/auth/me', { headers: { Authorization: `Bearer ${t}` } })
+        .then(r => r.json())
+        .then(data => {
+          if (data && data.user) {
+            setAuth({ token: t, user: data.user });
+            // remove token from URL
+            params.delete('token');
+            const newUrl = `${window.location.pathname}${params.toString() ? '?' + params.toString() : ''}`;
+            window.history.replaceState({}, document.title, newUrl);
+          }
+        }).catch(() => {});
+    }
+  }, []);
+
+  // listen for messages posted by the google popup window
+  React.useEffect(() => {
+    const handler = (ev) => {
+      try {
+        if (ev.data && ev.data.token) {
+          const t = ev.data.token;
+          // validate token with backend and set auth
+          fetch('http://localhost:5000/api/auth/me', { headers: { Authorization: `Bearer ${t}` } })
+            .then(r => r.json())
+            .then(data => {
+              if (data && data.user) {
+                setAuth({ token: t, user: data.user });
+                setShowAuthModal(false);
+              }
+            }).catch(() => {});
+        }
+      } catch (e) {}
+    };
+
+    window.addEventListener('message', handler);
+    return () => window.removeEventListener('message', handler);
+  }, []);
+
   return (
 
     <div className="min-h-screen bg-white overflow-x-hidden">
-      <Header />
+      <Header authToken={authToken} user={user} onAuthChange={setAuth} onShowMyDocs={(s) => setStep('mydocs')} />
 
       <div className="pt-20 pb-12 px-4 sm:px-6 lg:px-8 max-w-7xl mx-auto">
 
@@ -108,6 +183,10 @@ function App() {
           <UploadSection onUploadSuccess={handleUploadSuccess} />
         )}
 
+        {step === 'mydocs' && (
+          <MyDocuments authToken={authToken} />
+        )}
+
         {/* Edit / Review Step */}
         {step === 'edit' && (
           <div className="grid grid-cols-1 lg:grid-cols-2 gap-10">
@@ -140,6 +219,10 @@ function App() {
       </div>
 
       <Footer />
+
+      {showAuthModal && (
+        <AuthModal onClose={() => setShowAuthModal(false)} onAuthSuccess={(info) => { setAuth(info); setShowAuthModal(false); }} />
+      )}
     </div>
   );
 }
