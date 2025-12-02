@@ -110,9 +110,9 @@ const FormSection = ({ ocrData, onVerify }) => {
                     <div className="space-y-2 text-sm">
                         {formData.lines.map((l, idx) => (
                             <div key={idx} className="flex items-center justify-between border rounded p-2">
-                                <div className="flex-1 mr-4 text-gray-800">{l.text}</div>
-                                <div className={`px-2 py-1 rounded text-xs font-medium ${l.confidence > 75 ? 'bg-green-100 text-green-800' : l.confidence > 50 ? 'bg-yellow-100 text-yellow-800' : 'bg-red-100 text-red-800'}`}>
-                                    {l.confidence}%
+                                <div className="flex-1 mr-4 text-gray-800">{(l.text || l.best) ?? '—'}</div>
+                                <div className={`px-2 py-1 rounded text-xs font-medium ${((l.confidence || l.best_confidence) > 75 ? 'bg-green-100 text-green-800' : (l.confidence || l.best_confidence) > 50 ? 'bg-yellow-100 text-yellow-800' : 'bg-red-100 text-red-800')}`}>
+                                    {(l.confidence || l.best_confidence) ?? 0}%
                                 </div>
                             </div>
                         ))}

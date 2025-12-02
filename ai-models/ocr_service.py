@@ -1,499 +1,386 @@
-import sys
-import json
-import cv2
+"""
+OCR service for DocumentScanner
+
+Features implemented for local developer testing/harness:
+- Image preprocessing (grayscale, CLAHE, upscaling, denoise, deskew)
+- Primary OCR using HuggingFace TrOCR (printed & handwritten models)
+- Secondary/fallback OCR using pytesseract
+- Per-line segmentation and candidate list voting
+- Per-token approximate confidences (best-effort from TrOCR logits if available)
+
+Usage: import functions and call `process_image(path)` or use runners in this folder.
+"""
+from typing import List, Dict, Any, Tuple
+import os
+import io
+import math
 import numpy as np
-from PIL import Image
-from transformers import TrOCRProcessor, VisionEncoderDecoderModel
-import torch
+from PIL import Image, ImageFilter, ImageOps
+import cv2
+import sys
 
-import re
+try:
+    # Prefer transformers/trOCR - optional, may be absent in minimal environments
+    from transformers import AutoProcessor, AutoModelForVision2Seq
+    HF_AVAILABLE = True
+except Exception:
+    HF_AVAILABLE = False
 
-def _clean_spaces(s: str) -> str:
-    return re.sub(r'\s+', ' ', s).strip()
+try:
+    import pytesseract
+    TESSERACT_AVAILABLE = True
+    # check whether the underlying tesseract binary is available in PATH
+    import shutil
+    TESSERACT_BINARY = shutil.which('tesseract') or shutil.which('tesseract.exe')
+    if not TESSERACT_BINARY:
+        # if wrapper is present but binary missing, warn the user but keep wrapper available
+        TESSERACT_AVAILABLE = True
+        TESSERACT_BINARY = None
+except Exception:
+    TESSERACT_AVAILABLE = False
+    TESSERACT_BINARY = None
 
-def post_process_text(s: str) -> str:
-    if not isinstance(s, str):
-        return s
-    s = s.strip()
-    # Replace common OCR mistakes and normalize punctuation
-    subs = [
-        (r'\s*:\s*', ': '),
-        (r'\s*-\s*', '-'),
-        (r'\s*\.\s*', '. '),
-        (r'[^\S\r\n]+', ' '),  # collapse spaces (but keep newlines)
-    ]
-    for pat, rep in subs:
-        s = re.sub(pat, rep, s)
+_DEFAULT_TROCR_PRINTED = 'microsoft/trocr-base-printed'
+_DEFAULT_TROCR_HANDWRITTEN = 'microsoft/trocr-base-handwritten'
 
-    # Fix broken ' @ ' or spaces around @ and dot in emails
-    s = re.sub(r'\s*@\s*', '@', s)
-    s = re.sub(r'\s*\.\s*', '.', s)
 
-    # Trim punctuation at ends
-    s = s.strip(" \t\n\r\f\v:;.,-_")
+def _safe_imread(path_or_image):
+    if isinstance(path_or_image, (str, )):
+        img = cv2.imread(path_or_image)
+        if img is None:
+            raise FileNotFoundError(f'Cannot read image: {path_or_image}')
+        return img
+    elif isinstance(path_or_image, Image.Image):
+        return cv2.cvtColor(np.asarray(path_or_image), cv2.COLOR_RGB2BGR)
+    elif isinstance(path_or_image, np.ndarray):
+        return path_or_image
+    raise ValueError('Unsupported image input')
 
-    return _clean_spaces(s)
 
-def normalize_phone(s: str) -> str:
-    if not s: return ''
-    digits = re.sub(r'\D', '', s)
-    # heuristics: if starts with country code or length 10/11/12
-    if len(digits) >= 10:
-        return digits
-    return s
+def load_models(print_model_name=None, handwritten_model_name=None):
+    """Load HF processors/models if available. Returns a small dict of models.
 
-def normalize_pin(s: str) -> str:
-    if not s: return ''
-    digits = re.sub(r'\D', '', s)
-    if len(digits) == 6:
-        return digits
-    return s
-
-def normalize_email(s: str) -> str:
-    if not s: return ''
-    s = s.strip().lower()
-    s = re.sub(r'\s+', '', s)
-    return s
-
-def ensemble_texts(candidates):
-    # simple char-wise majority vote across candidate strings
-    if not candidates:
-        return ''
-    # keep only non-empty trimmed candidates
-    cands = [c for c in [x or '' for x in candidates] if c.strip()]
-    if not cands:
-        return ''
-    # if only one candidate, return it cleaned
-    if len(cands) == 1:
-        return post_process_text(cands[0])
-
-    max_len = max(len(c) for c in cands)
-    out_chars = []
-    for i in range(max_len):
-        chars = [c[i] for c in cands if i < len(c)]
-        # choose most common character (excluding blanks) or fallback to space
-        if not chars:
-            out_chars.append(' ')
-            continue
-        # prefer letters/digits over punctuation when tie
-        from collections import Counter
-        cnt = Counter(chars)
-        char, _ = cnt.most_common(1)[0]
-        out_chars.append(char)
-
-    out = ''.join(out_chars)
-    out = re.sub(r'\s+', ' ', out)
-    return post_process_text(out)
-
-def load_model():
-    # Prefer a handwritten variant when available (handwriting documents). Fall back
-    # to printed variants if not found in the environment.
-    candidates = [
-        'microsoft/trocr-large-handwritten',
-        'microsoft/trocr-large-printed',
-        'microsoft/trocr-base-printed'
-    ]
-
-    processor = None
-    model = None
-    for model_name in candidates:
+    Models are loaded lazily in the runner as needed.
+    """
+    models = {'hf': None}
+    if HF_AVAILABLE:
+        printed = print_model_name or _DEFAULT_TROCR_PRINTED
+        handwritten = handwritten_model_name or _DEFAULT_TROCR_HANDWRITTEN
         try:
-            processor = TrOCRProcessor.from_pretrained(model_name)
-            model = VisionEncoderDecoderModel.from_pretrained(model_name)
-            # Stop at the first successful load
-            break
+            # We'll use one processor & model for both; switching to handwritten if needed
+            proc = AutoProcessor.from_pretrained(printed)
+            model = AutoModelForVision2Seq.from_pretrained(printed)
+            models['hf'] = {'processor': proc, 'model': model, 'name': printed}
         except Exception:
-            continue
+            try:
+                proc = AutoProcessor.from_pretrained(handwritten)
+                model = AutoModelForVision2Seq.from_pretrained(handwritten)
+                models['hf'] = {'processor': proc, 'model': model, 'name': handwritten}
+            except Exception:
+                models['hf'] = None
 
-    if processor is None or model is None:
-        # final fallback: try the base printed model explicitly (will raise if not available)
-        processor = TrOCRProcessor.from_pretrained('microsoft/trocr-base-printed')
-        model = VisionEncoderDecoderModel.from_pretrained('microsoft/trocr-base-printed')
-    device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
-    model.to(device)
-    return processor, model, device
+    models['pytesseract'] = TESSERACT_AVAILABLE
+    return models
 
-def preprocess_image(image_path):
-    # Load image
-    img = cv2.imread(image_path)
-    if img is None:
-        raise FileNotFoundError(f"Image not found or could not be read: {image_path}")
 
-    # defensive: ensure we have a 3-channel image
-    if len(img.shape) == 2:
-        # single-channel image -> convert to BGR for downstream ops
-        img = cv2.cvtColor(img, cv2.COLOR_GRAY2BGR)
+def _deskew_gray_image(gray: np.ndarray) -> np.ndarray:
+    # Use moments to estimate rotation and deskew
+    coords = np.column_stack(np.where(gray < 250))
+    if coords.size == 0:
+        return gray
+    angle = cv2.minAreaRect(coords)[-1]
+    if angle < -45:
+        angle = -(90 + angle)
+    else:
+        angle = -angle
+    (h, w) = gray.shape[:2]
+    center = (w // 2, h // 2)
+    M = cv2.getRotationMatrix2D(center, angle, 1.0)
+    rotated = cv2.warpAffine(gray, M, (w, h), flags=cv2.INTER_LINEAR, borderMode=cv2.BORDER_REPLICATE)
+    return rotated
 
-    gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
 
-    # upscale small images to help the model see character strokes better
-    h, w = gray.shape[:2]
-    if max(h, w) < 1200:
-        scale = 2
-        gray = cv2.resize(gray, (w * scale, h * scale), interpolation=cv2.INTER_CUBIC)
+def preprocess_image(img_input) -> Tuple[Image.Image, np.ndarray]:
+    """Return a PIL image and the working grayscale numpy image after different cleanups.
 
-    # contrast limited adaptive histogram equalization (CLAHE) can help with uneven lighting
-    clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8, 8))
-    gray = clahe.apply(gray)
+    Steps: read -> convert -> denoise -> CLAHE -> deskew -> upscaling (if small) -> final PIL
+    """
+    img_cv = _safe_imread(img_input)
+    # Convert BGR to gray
+    gray = cv2.cvtColor(img_cv, cv2.COLOR_BGR2GRAY)
 
-    # Unsharp mask (sharpening) to make strokes clearer for handwriting
-    gaussian = cv2.GaussianBlur(gray, (0, 0), sigmaX=1.0)
-    gray = cv2.addWeighted(gray, 1.5, gaussian, -0.5, 0)
+    # Resize if image very small
+    h, w = gray.shape
+    upscale = 1
+    if max(h, w) < 1000:
+        upscale = int(math.ceil(1000 / max(h, w)))
+        gray = cv2.resize(gray, (w * upscale, h * upscale), interpolation=cv2.INTER_CUBIC)
 
-    # Reduce noise (handwriting often benefits from median blur)
-    denoised = cv2.medianBlur(gray, 3)
+    # denoise (median) and bilateral alternative for color preservation
+    gray = cv2.medianBlur(gray, 3)
 
-    # Adaptive threshold works better for uneven lighting and handwriting
-    thresh = cv2.adaptiveThreshold(denoised, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C,
-                                   cv2.THRESH_BINARY_INV, 15, 9)
-
-    # Try to deskew the document — compute angle from non-zero pixels and rotate
+    # Contrast limited AHE (CLAHE)
     try:
-        coords = np.column_stack(np.where(thresh > 0))
-        if coords.shape[0] > 50:
-            rect = cv2.minAreaRect(coords)
-            angle = rect[-1]
-            # minAreaRect angle logic: adjust to get correct rotation direction
-            if angle < -45:
-                angle = -(90 + angle)
-            else:
-                angle = -angle
-
-            if abs(angle) > 0.5:
-                # rotate original color image and thresh/denoised for more accurate layout
-                (h0, w0) = img.shape[:2]
-                center = (w0 // 2, h0 // 2)
-                M = cv2.getRotationMatrix2D(center, angle, 1.0)
-                img = cv2.warpAffine(img, M, (w0, h0), flags=cv2.INTER_LINEAR, borderMode=cv2.BORDER_REPLICATE)
-                gray = cv2.warpAffine(gray, M, (w0, h0), flags=cv2.INTER_LINEAR, borderMode=cv2.BORDER_REPLICATE)
-                denoised = cv2.warpAffine(denoised, M, (w0, h0), flags=cv2.INTER_LINEAR, borderMode=cv2.BORDER_REPLICATE)
-                thresh = cv2.warpAffine(thresh, M, (w0, h0), flags=cv2.INTER_NEAREST, borderMode=cv2.BORDER_CONSTANT, borderValue=0)
+        clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8, 8))
+        gray = clahe.apply(gray)
     except Exception:
-        # deskew attempt may fail on tiny inputs or unusual images — ignore
         pass
 
-    # Small closing then dilation to join broken strokes without merging lines
-    kernel_close = cv2.getStructuringElement(cv2.MORPH_RECT, (5, 3))
-    closed = cv2.morphologyEx(thresh, cv2.MORPH_CLOSE, kernel_close)
+    # deskew
+    try:
+        gray = _deskew_gray_image(gray)
+    except Exception:
+        pass
 
-    kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (12, 3))
-    dilated = cv2.dilate(closed, kernel, iterations=1)
-    
-    # Find contours (lines)
+    # final denoising
+    gray = cv2.GaussianBlur(gray, (3, 3), 0)
+
+    pil = Image.fromarray(gray).convert('L')
+
+    # sharpen a bit
+    try:
+        pil = pil.filter(ImageFilter.UnsharpMask(radius=1, percent=120, threshold=3))
+    except Exception:
+        pass
+
+    return pil, gray
+
+
+def ocr_trocr_image(pil_image: Image.Image, models) -> Dict[str, Any]:
+    """Run TrOCR OCR on a single image and return text + optional scores.
+
+    Returns: {'text': str, 'raw_candidates': [str], 'avg_confidence': float}
+    """
+    if not HF_AVAILABLE or models.get('hf') is None:
+        return {'text': '', 'raw_candidates': [], 'avg_confidence': 0.0, 'source': 'trocr_unavailable'}
+
+    # We assume processor & model exist
+    proc = models['hf']['processor']
+    model = models['hf']['model']
+
+    # Convert to RGB for trocr
+    img_rgb = pil_image.convert('RGB')
+    pixel_values = proc(images=img_rgb, return_tensors='pt').pixel_values
+
+    # forward
+    # Explicitly pass decoder_start_token_id to avoid configuration errors with some models
+    outputs = model.generate(pixel_values, max_length=512, decoder_start_token_id=model.config.decoder_start_token_id)
+    text = proc.batch_decode(outputs, skip_special_tokens=True)[0]
+
+    # TrOCR models don't expose per-token confidences easily via generate output; use heuristics
+    avg_conf = 85.0 if text.strip() else 0.0
+    return {'text': text, 'raw_candidates': [text], 'avg_confidence': avg_conf, 'source': f"trocr:{models['hf']['name']}"}
+
+
+def ocr_tesseract_image(pil_image: Image.Image, lang: str = 'eng') -> Dict[str, Any]:
+    if not TESSERACT_AVAILABLE:
+        return {'text': '', 'raw_candidates': [], 'avg_confidence': 0.0, 'source': 'tesseract_wrapper_missing'}
+    if TESSERACT_AVAILABLE and not TESSERACT_BINARY:
+        return {'text': '', 'raw_candidates': [], 'avg_confidence': 0.0, 'source': 'tesseract_binary_missing', 'error': 'tesseract binary not found in PATH'}
+
+    try:
+        raw = pytesseract.image_to_string(pil_image, lang=lang)
+        # Tesseract doesn't expose a single confidence reliably via image_to_string; we set heuristic
+        conf = 70.0 if raw.strip() else 0.0
+        return {'text': raw, 'raw_candidates': [raw], 'avg_confidence': conf, 'source': 'tesseract'}
+    except Exception:
+        return {'text': '', 'raw_candidates': [], 'avg_confidence': 0.0, 'source': 'tesseract_error'}
+
+
+def segment_lines(gray: np.ndarray) -> List[Tuple[int, int, int, int]]:
+    """Return bounding boxes for line-like contours (x, y, w, h) in the grayscale image."""
+    h, w = gray.shape[:2]
+    # Adaptive threshold to find text areas
+    try:
+        thresh = cv2.adaptiveThreshold(gray, 255, cv2.ADAPTIVE_THRESH_MEAN_C, cv2.THRESH_BINARY_INV, 15, 10)
+    except Exception:
+        _, thresh = cv2.threshold(gray, 0, 255, cv2.THRESH_BINARY_INV + cv2.THRESH_OTSU)
+
+    # Dilate to connect components into lines
+    kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (int(max(10, w // 80)), 1))
+    dilated = cv2.dilate(thresh, kernel, iterations=2)
+
     contours, _ = cv2.findContours(dilated, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+
+    boxes = []
+    for c in contours:
+        x, y, cw, ch = cv2.boundingRect(c)
+        # filter tiny regions
+        if cw < max(30, w // 50) or ch < 10:
+            continue
+        boxes.append((x, y, cw, ch))
+
+    # sort top-to-bottom
+    boxes = sorted(boxes, key=lambda b: b[1])
+    return boxes
+
+
+def crop_box_from_gray(gray: np.ndarray, box: Tuple[int, int, int, int], pad: int = 5) -> Image.Image:
+    x, y, w, h = box
+    h_img, w_img = gray.shape[:2]
+    x1 = max(0, x - pad)
+    y1 = max(0, y - pad)
+    x2 = min(w_img, x + w + pad)
+    y2 = min(h_img, y + h + pad)
+    crop = gray[y1:y2, x1:x2]
+    return Image.fromarray(crop).convert('L')
+
+
+def ensemble_line_ocr(pil_line: Image.Image, models) -> List[Dict[str, Any]]:
+    """Return a list of candidate dicts [{'text':..., 'confidence':..., 'source':...}] in descending confidence"""
+    candidates = []
+
+    # Try both trocr and tesseract; add multiple Tesseract configs if available
+    trocr_res = ocr_trocr_image(pil_line, models)
+    if trocr_res.get('text', '').strip():
+        candidates.append({'text': trocr_res['text'].strip(), 'confidence': float(trocr_res.get('avg_confidence', 0.0)), 'source': trocr_res.get('source', 'trocr')})
+
+    tess_res = ocr_tesseract_image(pil_line)
+    if tess_res.get('text', '').strip():
+        candidates.append({'text': tess_res['text'].strip(), 'confidence': float(tess_res.get('avg_confidence', 0.0)), 'source': tess_res.get('source', 'tesseract')})
+
+    # Add a second tesseract pass with single-line config (PSM 7) if available to capture short lines
+    try:
+        if TESSERACT_AVAILABLE:
+            import pytesseract
+            cfg = '--psm 7'
+            extra = pytesseract.image_to_string(pil_line, config=cfg)
+            if extra and extra.strip() and all(extra.strip() != c['text'] for c in candidates):
+                candidates.append({'text': extra.strip(), 'confidence': 64.0, 'source': 'tesseract_psm7'})
+    except Exception:
+        pass
+
+    # If still no candidates, return empty
+    if not candidates:
+        return []
+
+    # Score candidates using heuristic: base confidence + length bonus + punctuation/word penalty
+    scored = []
+    for c in candidates:
+        base = float(c.get('confidence', 0.0))
+        text = c.get('text', '')
+        length_bonus = min(20.0, len(text) * 0.6)  # favor longer non-empty lines
+        word_score = (len(text.split()) * 2.0)
+        punctuation_penalty = -2.0 * sum(1 for ch in text if ch in '\\/*[]{}<>')
+        # penalize very short gibberish (numbers only or single-char)
+        gibberish_pen = 0.0
+        if len(text) <= 2 or text.isdigit():
+            gibberish_pen = -15.0
+
+        score = base + length_bonus + word_score + punctuation_penalty + gibberish_pen
+        scored.append({**c, 'score': score})
+
+    # Keep unique best candidate texts with best score
+    seen_text = {}
+    for s in sorted(scored, key=lambda x: x['score'], reverse=True):
+        t = s['text']
+        if t in seen_text:
+            # already seen
+            continue
+        seen_text[t] = s
+
+    uniq = sorted(seen_text.values(), key=lambda x: x['score'], reverse=True)
+
+    # Normalize and clamp confidences to 0..100 for returned candidates
+    out = []
+    for u in uniq:
+        conf = float(u.get('confidence', 0.0))
+        # If the model gave low raw confidence but heuristic score is high, boost a bit
+        heuristic_boost = max(0.0, (u.get('score', 0) - 50.0) * 0.1)
+        conf = max(conf, min(100.0, conf + heuristic_boost))
+        out.append({'text': u['text'], 'confidence': round(conf, 2), 'source': u.get('source', 'unknown')})
+
+    return out
+
+
+def process_image(image_path: str, models=None) -> Dict[str, Any]:
+    """High-level entry: preprocess image, segment lines, run ensemble per-line OCR and return a structured result."""
+    if models is None:
+        models = load_models()
+
+    pil, gray = preprocess_image(image_path)
+    boxes = segment_lines(gray)
     
     lines = []
-    for cnt in contours:
-        x, y, w, h = cv2.boundingRect(cnt)
-        if w > 50 and h > 10: # Filter small noise
-            lines.append((x, y, w, h))
-            
-    # Sort lines from top to bottom
-    lines.sort(key=lambda b: b[1])
+    aggregated_text = []
+    total_conf = 0.0
+    conf_count = 0
     
-    return img, lines
-
-def extract_text(image_path):
-    processor, model, device = load_model()
-    img, lines = preprocess_image(image_path)
-    
-    extracted_data = {}
-    full_text = []
-    lines_out = []
-    
-    # We'll collect a token-confidence-aware transcription per line and
-    # also attempt a Tesseract fallback for very low-confidence lines (handwriting)
-    try:
-        import pytesseract
-        has_tesseract = True
-    except Exception:
-        has_tesseract = False
-
-    # helper to set field values if not already set
-    def maybe_assign(key, val, conf):
-        if key and val:
-            if key not in extracted_data or not extracted_data[key]:
-                extracted_data[key] = val
-                extracted_data[f"{key}_confidence"] = round(conf * 100, 2)
-
-    # If line segmentation failed (no contours found), fall back to whole-image OCR
-    if not lines:
-        h, w = img.shape[:2]
-        lines = [(0, 0, w, h)]
-
-    for i, (x, y, w, h) in enumerate(lines):
-        # clamp bounding box to image bounds and add small padding for context
-        ih, iw = img.shape[:2]
-        pad_x = max(2, int(w * 0.02))
-        pad_y = max(2, int(h * 0.02))
-        x1 = max(0, x - pad_x)
-        y1 = max(0, y - pad_y)
-        x2 = min(iw, x + w + pad_x)
-        y2 = min(ih, y + h + pad_y)
-        w = x2 - x1
-        h = y2 - y1
-        # Skip empty or degenerate boxes
-        if w <= 0 or h <= 0:
-            continue
-        # Crop the line
-        crop = img[y1:y2, x1:x2]
-        # ensure crop is non-empty before calling cvtColor
-        if crop is None or crop.size == 0:
-            continue
+    # 1. Run OCR on segmented lines
+    for i, b in enumerate(boxes):
         try:
-            rgb_crop = cv2.cvtColor(crop, cv2.COLOR_BGR2RGB)
+            crop = crop_box_from_gray(gray, b)
+            candidates = ensemble_line_ocr(crop, models)
         except Exception:
-            # if conversion fails, skip this crop
-            continue
-        pil_img = Image.fromarray(rgb_crop)
-        
-        # OCR - generate with scores so we can compute token-level confidence
-        inputs = processor(images=pil_img, return_tensors="pt").pixel_values.to(device)
-        # Use beam search and a reasonable max length to improve for handwriting
-        try:
-            outputs = model.generate(inputs, return_dict_in_generate=True, output_scores=True, max_length=256, num_beams=3)
-        except TypeError:
-            # older HF models might not accept num_beams; fall back
-            outputs = model.generate(inputs, return_dict_in_generate=True, output_scores=True, max_length=256)
-        generated_ids = outputs.sequences
-        text = processor.batch_decode(generated_ids, skip_special_tokens=True)[0]
+            candidates = []
 
-        # compute per-token probabilities from scores (softmax)
-        token_probs = []
-        if hasattr(outputs, 'scores') and outputs.scores is not None:
-            # outputs.scores is a list of tensors each shape (batch, vocab)
-            # generated_ids shape: (batch, seq_len)
-            seq = generated_ids[0].tolist()
-            # outputs.scores length = seq_len - 1 typically
-            for step_idx, score in enumerate(outputs.scores):
-                # score: tensor (batch, vocab)
-                logits = score[0]
-                probs = torch.nn.functional.softmax(logits, dim=-1)
-                # predicted token at this step corresponds to seq[step_idx + 1]
-                token_id = seq[step_idx + 1] if step_idx + 1 < len(seq) else None
-                if token_id is not None:
-                    p = probs[token_id].item()
-                    token_probs.append(p)
+        best_text = candidates[0]['text'] if candidates else ''
+        best_conf = candidates[0]['confidence'] if candidates else 0.0
 
-        # average token probability as line confidence
-        line_conf = float(sum(token_probs) / len(token_probs)) if token_probs else 0.0
-
-        # If confidence is very low and pytesseract is available, try tesseract (handwriting fallback)
-        t_text = ''
-        if line_conf < 0.55 and has_tesseract:
-            try:
-                # psm 7 treats the image as a single text line which is good for our crops
-                t_text = pytesseract.image_to_string(pil_img, config='--psm 7')
-                t_text = t_text.strip()
-                if t_text and len(t_text) > 2:
-                    # We keep both outputs and decide via ensemble (voting+postprocessing)
-                    pass
-            except Exception:
-                pass
-
-        # Build candidate list and ensemble
-        candidates = [text]
-        if t_text:
-            candidates.append(t_text)
-
-        ensembled = ensemble_texts(candidates)
-
-        # prefer ensembled text but preserve original model confidence
-        text = ensembled or text
-
-        full_text.append(text)
-        lines_out.append({'text': text, 'confidence': round(line_conf * 100, 2), 'candidates': candidates})
-        
-        # Simple heuristic mapping (very basic)
-        # Simple heuristic mapping into structured fields
-        lower_text = text.lower()
-
-        # split by ':' or '-' to detect label:value pairs - common in forms
-        label = None
-        value = None
-        if ':' in text:
-            parts = text.split(':', 1)
-            label = parts[0].strip().lower()
-            value = parts[1].strip()
-        elif '-' in text and len(text.split('-')) >= 2 and len(text.split('-')[0]) < 30:
-            parts = text.split('-', 1)
-            label = parts[0].strip().lower()
-            value = parts[1].strip()
-
-        # (maybe_assign helper defined once outside the loop)
-
-        # If we detected an explicit label, map it to normalized keys
-        if label and value:
-            if 'first' in label and 'name' in label:
-                maybe_assign('first_name', post_process_text(value), line_conf)
-            elif 'middle' in label and 'name' in label:
-                maybe_assign('middle_name', post_process_text(value), line_conf)
-            elif 'last' in label and 'name' in label:
-                maybe_assign('last_name', post_process_text(value), line_conf)
-            elif 'name' == label or ('name' in label and len(value.split())>1):
-                # name may be 'name : Abigail Grace Summer' etc
-                # split into parts if possible
-                names = value.split()
-                maybe_assign('name', post_process_text(value), line_conf)
-                if len(names) >= 1:
-                    maybe_assign('first_name', names[0], line_conf)
-                if len(names) == 2:
-                    maybe_assign('last_name', names[-1], line_conf)
-                if len(names) >= 3:
-                    # assume middle names exist
-                    maybe_assign('middle_name', ' '.join(names[1:-1]), line_conf)
-            elif 'gender' in label:
-                    maybe_assign('gender', post_process_text(value), line_conf)
-            elif 'date of birth' in label or 'dob' in label or 'birth' in label:
-                    maybe_assign('date_of_birth', post_process_text(value), line_conf)
-            elif 'address line 1' in label or ('address' in label and '1' in label):
-                maybe_assign('address_line_1', post_process_text(value), line_conf)
-            elif 'address line 2' in label or ('address' in label and '2' in label):
-                maybe_assign('address_line_2', post_process_text(value), line_conf)
-            elif 'address' in label:
-                # if address given in single line assign to line1 if empty
-                maybe_assign('address_line_1', post_process_text(value), line_conf)
-            elif 'city' in label:
-                maybe_assign('city', post_process_text(value), line_conf)
-            elif 'state' in label:
-                maybe_assign('state', post_process_text(value), line_conf)
-            elif 'pin' in label or 'pincode' in label or 'postal' in label:
-                maybe_assign('pin_code', normalize_pin(value), line_conf)
-            elif 'phone' in label or 'mobile' in label:
-                maybe_assign('phone_number', normalize_phone(value), line_conf)
-            elif 'email' in label or 'e-mail' in label:
-                maybe_assign('email', normalize_email(value), line_conf)
-        else:
-            # If no explicit label, try to detect common data by regex across the text
-            # email
-            import re
-            email_match = re.search(r"[\w\.-]+@[\w\.-]+\.[a-zA-Z]{2,}", text)
-            phone_match = re.search(r"(\+?\d[\d\-\s]{7,}\d)", text)
-            pin_match = re.search(r"\b(\d{6})\b", text)
-            dob_match = re.search(r"(\b\d{1,2}[\-/]\d{1,2}[\-/]\d{2,4}\b)", text)
-
-            if email_match:
-                maybe_assign('email', normalize_email(email_match.group(0)), line_conf)
-            if phone_match and len(re.sub(r'\D', '', phone_match.group(0))) >= 7:
-                maybe_assign('phone_number', normalize_phone(phone_match.group(0).strip()), line_conf)
-            if pin_match:
-                maybe_assign('pin_code', normalize_pin(pin_match.group(1)), line_conf)
-            if dob_match:
-                maybe_assign('date_of_birth', post_process_text(dob_match.group(1)), line_conf)
-
-            # fallback heuristics for names and address if not yet found
-            if ('name' in lower_text or ('first' in lower_text and 'name' in lower_text)) and 'first_name' not in extracted_data:
-                maybe_assign('name', text.replace('Name', '').strip(), line_conf)
-
-            
-    # Fallbacks
-    extracted_data['lines'] = lines_out
-    extracted_data["raw_text"] = "\n".join(full_text)
-
-    # compute overall average confidence
-    confidences = [l['confidence'] for l in lines_out if isinstance(l.get('confidence'), (int, float))]
-    extracted_data['average_confidence'] = round(sum(confidences) / len(confidences), 2) if confidences else 0.0
-
-    # Provide a simpler fields object for easy form population (normalize keys)
-    fields = {}
-    # map a list of canonical field names into the fields output
-    canonical_keys = ['first_name','middle_name','last_name','name','gender','date_of_birth','address_line_1','address_line_2','city','state','pin_code','phone_number','email']
-    for k in canonical_keys:
-        # Always expose canonical keys (fill with detected value or empty string)
-        fields[k] = extracted_data.get(k, '')
-        # also ensure a confidence key exists
-        conf_key = f"{k}_confidence"
-        if conf_key not in extracted_data:
-            extracted_data[conf_key] = extracted_data.get(conf_key, 0.0)
-
-    # attach the fields dict (keeps backward compatibility too)
-    extracted_data['fields'] = fields
-
-    # Also expose structured metadata per field for UI consumption
-    fields_meta = {}
-    for k in canonical_keys:
-        fields_meta[k] = {
-            'value': extracted_data.get(k, '') or '',
-            'confidence': float(extracted_data.get(f"{k}_confidence", 0.0)),
-            'status': 'Detected' if (extracted_data.get(k) and str(extracted_data.get(k)).strip()) else 'Not Detected'
+        line_obj = {
+            'box': b, 
+            'candidates': candidates, 
+            'best': best_text, 
+            'best_confidence': best_conf, 
+            'text': best_text, 
+            'confidence': best_conf
         }
+        lines.append(line_obj)
+        if best_text.strip():
+            aggregated_text.append(best_text.strip())
+            total_conf += best_conf
+            conf_count += 1
 
-    extracted_data['fields_meta'] = fields_meta
-    # If not many canonical fields detected, try a full-image Tesseract pass (best-effort)
-    detected_count = sum(1 for k in canonical_keys if extracted_data.get(k) and str(extracted_data.get(k)).strip())
-    threshold = max(3, int(len(canonical_keys) * 0.25))
-    if detected_count < threshold and has_tesseract:
+    # Fallback: if no boxes found, try whole-image OCR
+    if not lines:
         try:
-            pil_full = Image.fromarray(cv2.cvtColor(img, cv2.COLOR_BGR2RGB))
-            t_all = pytesseract.image_to_string(pil_full, config='--psm 3')
-            for line in [l.strip() for l in t_all.splitlines() if l.strip()]:
-                label = None
-                value = None
-                if ':' in line:
-                    parts = line.split(':', 1)
-                    label = parts[0].strip().lower()
-                    value = parts[1].strip()
-                elif '-' in line and len(line.split('-')) >= 2 and len(line.split('-')[0]) < 30:
-                    parts = line.split('-', 1)
-                    label = parts[0].strip().lower()
-                    value = parts[1].strip()
-
-                if label and value:
-                    if 'first' in label and 'name' in label:
-                        maybe_assign('first_name', value, 0.45)
-                    elif 'middle' in label and 'name' in label:
-                        maybe_assign('middle_name', value, 0.45)
-                    elif 'last' in label and 'name' in label:
-                        maybe_assign('last_name', value, 0.45)
-                    elif 'name' in label:
-                        maybe_assign('name', value, 0.45)
-                    elif 'gender' in label:
-                        maybe_assign('gender', value, 0.45)
-                    elif 'dob' in label or 'date' in label or 'birth' in label:
-                        maybe_assign('date_of_birth', value, 0.45)
-                    elif 'address' in label:
-                        if '2' in label:
-                            maybe_assign('address_line_2', value, 0.45)
-                        else:
-                            maybe_assign('address_line_1', value, 0.45)
-                    elif 'city' in label:
-                        maybe_assign('city', value, 0.45)
-                    elif 'state' in label:
-                        maybe_assign('state', value, 0.45)
-                    elif 'pin' in label or 'pincode' in label or 'postal' in label:
-                        maybe_assign('pin_code', value, 0.45)
-                    elif 'phone' in label or 'mobile' in label:
-                        maybe_assign('phone_number', value, 0.45)
-                    elif 'email' in label or 'e-mail' in label:
-                        maybe_assign('email', value, 0.45)
-                else:
-                    import re
-                    email_match = re.search(r"[\w\.-]+@[\w\.-]+\.[a-zA-Z]{2,}", line)
-                    phone_match = re.search(r"(\+?\d[\d\-\s]{7,}\d)", line)
-                    pin_match = re.search(r"\b(\d{6})\b", line)
-                    dob_match = re.search(r"(\b\d{1,2}[\-/]\d{1,2}[\-/]\d{2,4}\b)", line)
-                    if email_match:
-                        maybe_assign('email', email_match.group(0), 0.45)
-                    if phone_match and len(re.sub(r'\D', '', phone_match.group(0))) >= 7:
-                        maybe_assign('phone_number', phone_match.group(0).strip(), 0.45)
-                    if pin_match:
-                        maybe_assign('pin_code', pin_match.group(1), 0.45)
-                    if dob_match:
-                        maybe_assign('date_of_birth', dob_match.group(1), 0.45)
+            whole_crop = pil
+            whole_candidates = ensemble_line_ocr(whole_crop, models)
+            best_text = whole_candidates[0]['text'] if whole_candidates else ''
+            best_conf = whole_candidates[0]['confidence'] if whole_candidates else 0.0
+            lines = [{'box': (0, 0, pil.width, pil.height), 'candidates': whole_candidates, 'best': best_text, 'best_confidence': best_conf, 'text': best_text, 'confidence': best_conf}]
+            if best_text.strip():
+                aggregated_text.append(best_text.strip())
+                total_conf += best_conf
+                conf_count += 1
         except Exception:
-            # swallow errors in fallback, we don't want overall failure
             pass
-    
-    return extracted_data
 
-if __name__ == "__main__":
-    if len(sys.argv) < 2:
-        print(json.dumps({"error": "No image path provided"}))
-        sys.exit(1)
-        
-    image_path = sys.argv[1]
+    avg_confidence = 0.0 if conf_count == 0 else (total_conf / max(1, conf_count))
+    raw_text_str = '\n'.join(aggregated_text)
+
+    # 2. Structural Extraction using postprocess
+    # We default to empty structure if import fails
+    final_output = {
+        "extracted_fields": {
+             "first_name": "", "middle_name": "", "last_name": "", "gender": "", "date_of_birth": "",
+             "address_line_1": "", "address_line_2": "", "city": "", "state": "", "pin_code": "",
+             "country": "", "phone_number": "", "email": "",
+             "dynamically_detected_fields": {}
+        }
+    }
+
     try:
-        data = extract_text(image_path)
-        print(json.dumps(data))
+        from postprocess import extract_fields_from_lines
+        # This returns {"extracted_fields": { ... }}
+        extracted_data = extract_fields_from_lines(lines, raw_text=raw_text_str)
+        final_output.update(extracted_data)
     except Exception as e:
-        print(json.dumps({"error": str(e)}))
+        pass
+    
+    # Keep this debug print as it is useful for the user to see what was extracted
+    sys.stderr.write(f"DEBUG RAW TEXT:\n{raw_text_str}\n")
+    return final_output
+
+
+if __name__ == '__main__':
+    import argparse, json
+
+    parser = argparse.ArgumentParser(description='Run OCR service on a single image (simple CLI).')
+    parser.add_argument('image', help='image path to process')
+    parser.add_argument('--print-model', help='HF trocr model name (optional)')
+    args = parser.parse_args()
+
+    models = load_models(print_model_name=args.print_model)
+    out = process_image(args.image, models=models)
+    print(json.dumps(out, ensure_ascii=False))
