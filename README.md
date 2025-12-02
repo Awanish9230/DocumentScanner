@@ -62,6 +62,36 @@ pip install -r requirements.txt
 ```
 *Note: The first time you run the OCR, it will download the TrOCR model (~1.5GB).*
 
+Optional — Handwriting fallback with Tesseract
+----------------------------------------------
+For handwriting-heavy documents the Python service can optionally fall back to Tesseract OCR when the transformer model reports low token/confidence scores.
+
+- Install the Python wrapper:
+```
+pip install pytesseract
+```
+- Install the Tesseract engine on your system:
+	- macOS: brew install tesseract
+	- Debian/Ubuntu: sudo apt-get install tesseract-ocr
+	- Windows: download and run the Tesseract installer (add the installation path to PATH).
+
+Developer utilities - quick sample tests
+---------------------------------------
+Two quick helpers were added under `ai-models/` to speed up local testing:
+
+- `run_sample.py` — runs the OCR on a single image and prints the cleaned structured JSON fields.
+	Example:
+	```bash
+	cd ai-models
+	python run_sample.py /path/to/document.jpg
+	```
+
+- `run_verify_sample.py` — runs OCR and locally compares it to a JSON file of expected values (mimics the server verify algorithm) so you can debug field-level matches.
+	Example:
+	```bash
+	python run_verify_sample.py /path/to/document.jpg /path/to/userdata.json
+	```
+
 ## Running the Application
 
 ### Start the Backend
@@ -104,4 +134,13 @@ MossipIITM/
 3.  **Edit**: Review the extracted fields. If the OCR missed something or made a mistake, correct it in the input fields.
 4.  **Verify**: Click "Verify Data" to see a comparison report.
 5.  **Analyze**: Check the confidence scores and match status (Match, Partial Match, Mismatch).
+
+Verification details
+--------------------
+The verification step combines two signals to decide if fields match:
+
+- a string similarity score (Levenshtein-based) between the OCR value and the user-provided value
+- the OCR model's confidence for that extracted field (when available)
+
+These are combined into a single "combined score" (server-side) that determines Match / Partial Match / Mismatch. This helps reduce false-positives when the OCR model is confident or to credit approximate matches when similarity is high.
 

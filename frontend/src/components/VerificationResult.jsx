@@ -108,17 +108,25 @@ const VerificationResult = ({ results = [], averageConfidence = 0, onReset }) =>
                                     <div className="grid grid-cols-2 gap-4 mt-3">
                                         <div>
                                             <p className="text-xs text-gray-600 mb-1">OCR Extracted</p>
-                                            <p className="text-gray-800 font-mono text-sm bg-gray-100 p-2 rounded">
-                                                {item.ocrValue || '—'}
-                                            </p>
+                                            <pre className="text-gray-800 font-mono text-sm bg-gray-100 p-2 rounded max-h-40 overflow-auto">
+                                                {typeof item.ocrValue === 'object' ? JSON.stringify(item.ocrValue, null, 2) : (item.ocrValue || '—')}
+                                            </pre>
                                         </div>
 
                                         <div>
                                             <p className="text-xs text-gray-600 mb-1">User Input</p>
-                                            <p className="text-gray-800 font-mono text-sm bg-gray-100 p-2 rounded">
-                                                {item.userValue || '—'}
-                                            </p>
+                                            <pre className="text-gray-800 font-mono text-sm bg-gray-100 p-2 rounded max-h-40 overflow-auto">
+                                                {typeof item.userValue === 'object' ? JSON.stringify(item.userValue, null, 2) : (item.userValue || '—')}
+                                            </pre>
                                         </div>
+                                    </div>
+
+                                    <div className="mt-3 text-sm text-gray-600 space-y-1">
+                                        <div>OCR Confidence: <strong className={getConfidenceColor(Number(item.ocr_confidence))}>{item.ocr_confidence || 0}%</strong></div>
+                                        <div>Combined score: <strong className={getConfidenceColor(Number(item.combinedScore))}>{item.combinedScore || 0}%</strong></div>
+                                        {item.notes && (
+                                            <div className="text-xs text-gray-500 italic mt-1">Note: {item.notes}</div>
+                                        )}
                                     </div>
                                 </div>
                             </div>

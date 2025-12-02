@@ -32,7 +32,12 @@ const FormSection = ({ ocrData, onVerify }) => {
 
     const sortedKeys = Object.keys(formData).sort();
     // filter out non-field keys so we can render only editable text inputs
-    const displayKeys = sortedKeys.filter(k => ['raw_text', 'lines', 'average_confidence'].indexOf(k) === -1 && typeof formData[k] === 'string');
+    // Exclude metadata keys and any confidence keys from editable form fields
+    const displayKeys = sortedKeys.filter(k => {
+        if (['raw_text', 'lines', 'average_confidence', 'fields'].includes(k)) return false;
+        if (k.endsWith('_confidence')) return false;
+        return typeof formData[k] === 'string';
+    });
 
     return (
         <div className="max-w-6xl mx-auto">
