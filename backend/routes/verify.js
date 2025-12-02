@@ -37,7 +37,50 @@ router.post('/', (req, res) => {
 
         try {
             const result = JSON.parse(dataString);
-            res.json(result);
+
+            // Transform the verification_result structure to match frontend expectations
+            const verificationResult = result.verification_result || {};
+            const results = [];
+
+            // Process standard fields
+            for (const [field, data] of Object.entries(verificationResult)) {
+                if (field === 'dynamic_field_results' || field === 'overall_accuracy' ||
+                    field.startsWith('fields_')) {
+                    continue; // Skip metadata fields
+                }
+
+                results.push({
+                    field: field,
+                    status: data.match_status === 'match' ? 'Match' :
+                        data.match_status === 'partial_match' ? 'Partial Match' : 'Mismatch',
+                    similarity: data.confidence_score || 0,
+                    ocrValue: data.ocr_value || '',
+                    userValue: data.user_value || '',
+                    ocr_confidence: 85, // Default OCR confidence from EasyOCR
+                    combinedScore: data.confidence_score || 0
+                });
+            }
+
+            // Process dynamic fields
+            if (verificationResult.dynamic_field_results) {
+                for (const [field, data] of Object.entries(verificationResult.dynamic_field_results)) {
+                    results.push({
+                        field: field,
+                        status: data.match_status === 'match' ? 'Match' :
+                            data.match_status === 'partial_match' ? 'Partial Match' : 'Mismatch',
+                        similarity: data.confidence_score || 0,
+                        ocrValue: data.ocr_value || '',
+                        userValue: data.user_value || '',
+                        ocr_confidence: 85,
+                        combinedScore: data.confidence_score || 0
+                    });
+                }
+            }
+
+            res.json({
+                results: results,
+                averageConfidence: verificationResult.overall_accuracy || 0
+            });
         } catch (err) {
             console.error('JSON Parse Error:', err);
             res.status(500).json({ error: 'Failed to parse verification output', raw: dataString });
