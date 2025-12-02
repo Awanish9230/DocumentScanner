@@ -10,6 +10,7 @@ import VerificationResult from './components/VerificationResult';
 function App() {
   const [authToken, setAuthToken] = useState(localStorage.getItem('token') || null);
   const [user, setUser] = useState(JSON.parse(localStorage.getItem('user') || 'null'));
+  const [theme, setTheme] = useState(localStorage.getItem('theme') || null);
   const [step, setStep] = useState('upload'); // upload, edit, verify
   const [ocrData, setOcrData] = useState(null);
   const [imagePath, setImagePath] = useState(null);
@@ -77,6 +78,15 @@ function App() {
     return () => window.removeEventListener('openAuthModal', open);
   }, []);
 
+  // Apply theme (light/dark) to document element and persist
+  React.useEffect(() => {
+    const t = theme || (window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light');
+    if (t === 'dark') document.documentElement.classList.add('dark-mode'); else document.documentElement.classList.remove('dark-mode');
+    localStorage.setItem('theme', t);
+  }, [theme]);
+
+  const toggleTheme = () => setTheme(prev => (prev === 'dark' ? 'light' : 'dark'));
+
   // if redirected back from Google OAuth, there may be a token in the url
   React.useEffect(() => {
     const params = new URLSearchParams(window.location.search);
@@ -120,10 +130,17 @@ function App() {
     return () => window.removeEventListener('message', handler);
   }, []);
 
+  // listen for header's toggleTheme events and map to state
+  React.useEffect(() => {
+    const onToggle = () => toggleTheme();
+    window.addEventListener('toggleTheme', onToggle);
+    return () => window.removeEventListener('toggleTheme', onToggle);
+  }, [theme]);
+
   return (
 
     <div className="min-h-screen bg-white overflow-x-hidden">
-      <Header authToken={authToken} user={user} onAuthChange={setAuth} onShowMyDocs={(s) => setStep('mydocs')} />
+      <Header authToken={authToken} user={user} onAuthChange={setAuth} onShowMyDocs={(s) => setStep('mydocs')} onGoHome={() => setStep('upload')} theme={theme} toggleTheme={toggleTheme} />
 
       <div className="pt-20 pb-12 px-4 sm:px-6 lg:px-8 max-w-7xl mx-auto">
 

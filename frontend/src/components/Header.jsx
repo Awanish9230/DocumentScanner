@@ -27,7 +27,7 @@ const ProfileMenu = ({ user, onLogout, onOpenDocs }) => {
     );
 };
 
-const Header = ({ authToken, user, onAuthChange, onShowMyDocs }) => {
+const Header = ({ authToken, user, onAuthChange, onShowMyDocs, onGoHome, theme, toggleTheme }) => {
     const [scrolled, setScrolled] = useState(false);
 
     useEffect(() => {
@@ -52,7 +52,7 @@ const Header = ({ authToken, user, onAuthChange, onShowMyDocs }) => {
                 <div className="flex items-center justify-between h-16 md:h-20">
                     
                     {/* Logo */}
-                    <div className="flex items-center space-x-3">
+                    <div className="flex items-center space-x-3" style={{cursor: 'pointer'}} onClick={() => { if (typeof onGoHome === 'function') onGoHome(); }}>
                         <div className="w-10 h-10 bg-gradient-to-br from-purple-500 to-pink-500 rounded-xl flex items-center justify-center shadow-lg">
                             <span className="text-2xl font-bold text-white">D</span>
                         </div>
@@ -71,6 +71,13 @@ const Header = ({ authToken, user, onAuthChange, onShowMyDocs }) => {
                         aria-label="Main Navigation"
                         className="hidden md:flex items-center space-x-8"
                     >
+                        <a
+                            href="#home"
+                            onClick={(e) => { e.preventDefault(); if (typeof onGoHome === 'function') onGoHome(); }}
+                            className="text-gray-700 hover:text-purple-600 transition-colors font-medium"
+                        >
+                            Home
+                        </a>
                         <a
                             href="#features"
                             className="text-gray-700 hover:text-purple-600 transition-colors font-medium"
@@ -93,6 +100,11 @@ const Header = ({ authToken, user, onAuthChange, onShowMyDocs }) => {
 
                     {/* Profile / Auth area */}
                     <div className="flex items-center space-x-3 relative">
+                        {/* theme toggle */}
+                        <button aria-label="Toggle theme" onClick={() => typeof toggleTheme === 'function' && toggleTheme()} className="inline-flex items-center justify-center w-10 h-10 rounded-lg border border-gray-200 dark:border-gray-700 bg-white dark:bg-transparent text-gray-700 dark:text-gray-200 transition-all">
+                            <span id="theme-icon">{(typeof theme !== 'undefined' && theme === 'dark') || (typeof document !== 'undefined' && document.documentElement.classList.contains('dark')) ? '🌙' : '☀️'}</span>
+                        </button>
+
                         {!authToken && (
                             <button
                                 onClick={() => window.dispatchEvent(new CustomEvent('openAuthModal'))}

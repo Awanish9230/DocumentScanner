@@ -93,6 +93,21 @@ body {
   color: #bbbbbb;
 }
 
+/* Tailwind class compatibility for dark-mode: override common utility classes used across components */
+.dark-mode body, .dark-mode .min-h-screen, .dark-mode .bg-white {
+  background-color: var(--bg) !important;
+  color: var(--text) !important;
+}
+.dark-mode .bg-white { background-color: #0b1220 !important; }
+.dark-mode .bg-gray-50 { background-color: #0f1724 !important; }
+.dark-mode .text-gray-800, .dark-mode .text-gray-700 { color: var(--text) !important; }
+.dark-mode .text-gray-600, .dark-mode .text-gray-500, .dark-mode .text-gray-400 { color: #9aa4b2 !important; }
+.dark-mode .border-gray-200 { border-color: #2b3140 !important; }
+.dark-mode .border-white\/10 { border-color: rgba(255,255,255,0.08) !important; }
+.dark-mode .shadow-lg { box-shadow: 0 6px 18px rgba(0,0,0,0.6) !important; }
+.dark-mode .glass-card { background: rgba(255,255,255,0.03); border: 1px solid rgba(255,255,255,0.04); }
+.dark-mode .gradient-text { background-clip: text; -webkit-background-clip: text; color: transparent; }
+
 /* ------------------------------------------
    BUTTON IMPROVED UI
 ------------------------------------------- */
