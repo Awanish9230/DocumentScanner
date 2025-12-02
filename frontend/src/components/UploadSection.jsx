@@ -53,7 +53,9 @@ const UploadSection = ({ onUploadSuccess }) => {
                 throw new Error(data.error || 'Upload failed');
             }
 
-            onUploadSuccess(data.data, data.imagePath);
+            // Extract the fields from the nested structure
+            const extractedFields = data.data?.extracted_fields || data.data || {};
+            onUploadSuccess(extractedFields, data.imagePath);
         } catch (err) {
             setError(err.message);
         } finally {

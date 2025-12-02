@@ -57,6 +57,7 @@ npm install
 ### 4. OCR Engine Setup
 Navigate to the AI Models directory and install Python requirements:
 ```bash
+pip install easyocr
 cd ../ai-models
 pip install -r requirements.txt
 ```

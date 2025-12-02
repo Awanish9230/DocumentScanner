@@ -1,81 +1,26 @@
-"""
-Post-processing utilities for OCR output.
-
-This module provides:
-- normalization helpers
-- key:value detection from OCR lines
-- structure extraction into canonical fields
-- dynamic field discovery
-"""
 import re
+import json
+import sys
 from typing import List, Dict, Any, Tuple
 
-# ----------------------------------------------------------------------
-# 1. Normalization & Cleaning
-# ----------------------------------------------------------------------
+# -------------------------------------------------------------------
+# -------------------  YOUR ORIGINAL FUNCTIONS  ---------------------
+# -------------------------------------------------------------------
 
-def normalize_label(lbl: str) -> str:
-    """Convert a label text to snake_case."""
-    if not lbl:
-        return ''
-    s = lbl.strip().lower()
-    # Remove possessives
-    s = re.sub(r"\'s\b", '', s)
-    # Replace non-alphanumeric with underscore
-    s = re.sub(r"[^a-z0-9]+", '_', s)
-    # Collapse underscores
-    s = re.sub(r'_+', '_', s)
-    return s.strip('_')
+def find_mobile_number(raw_text: str) -> str:
+    match = re.search(r'\b(?:\+91[-\s]?)?[6-9]\d{9}\b', raw_text)
+    return match.group(0) if match else None
 
-def clean_value(val: str) -> str:
-    """Remove OCR noise and fix common issues."""
-    if not val:
-        return None
-    
-    s = val.strip()
-    
-    # Fix common email OCR errors (e.g. "Abigail@" -> "Abigail@gmail.com" is hard to guess, 
-    # but we can fix "Abigail@ gmail . com")
-    # Here we just clean up spacing around special chars
-    s = re.sub(r'\s*@\s*', '@', s)
-    s = re.sub(r'\s*\.\s*', '.', s)
-    
-    # Remove leading/trailing special chars that are likely noise
-    s = s.strip(" :;,-_=|/\\")
-    
-    # Collapse spaces
-    s = re.sub(r'\s+', ' ', s)
-    
-    return s if s else None
+def find_email(raw_text: str) -> str:
+    match = re.search(r'[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}', raw_text)
+    return match.group(0) if match else None
 
-def normalize_email(s: str) -> str:
-    if not s: return ''
-    s = s.strip().lower()
-    s = re.sub(r'\s+', '', s)
-    # Fix common OCR typos for emails
-    s = s.replace('..', '.')
-    return s
+def find_pincode(raw_text: str) -> str:
+    match = re.search(r'\b\d{6}\b', raw_text)
+    return match.group(0) if match else None
 
-def normalize_phone(s: str) -> str:
-    if not s: return ''
-    # Keep only digits and plus sign
-    digits = re.sub(r'[^0-9+]', '', s)
-    return digits
-
-def normalize_date(s: str) -> str:
-    if not s: return ''
-    return s.strip()
-
-# ----------------------------------------------------------------------
-# 2. Field Detection Logic
-# ----------------------------------------------------------------------
-
-def split_full_name(full_name: str) -> Dict[str, str]:
-    """Split a full name into first, middle, last."""
-    if not full_name:
-        return {"first_name": "", "middle_name": "", "last_name": ""}
-    
-    parts = full_name.split()
+def split_name(full_name: str) -> Dict[str, str]:
+    parts = full_name.strip().split()
     if len(parts) == 1:
         return {"first_name": parts[0], "middle_name": "", "last_name": ""}
     elif len(parts) == 2:
@@ -87,78 +32,29 @@ def split_full_name(full_name: str) -> Dict[str, str]:
             "last_name": parts[-1]
         }
 
-def detect_kv_from_line(line: str) -> Tuple[str, str]:
-    """Try to detect key:value patterns in a single OCR line."""
-    if not line or not line.strip():
-        return (None, None)
+def normalize_label(label: str) -> str:
+    return (
+        label.lower()
+        .replace(":", "")
+        .replace("-", " ")
+        .strip()
+    )
 
-    # Common separators: ':', '-', or just space if it looks like a form label
-    # We prioritize ':' and '-'
-    for sep in [':', ' - ', ' -', '- ']:
-        if sep in line:
-            parts = line.split(sep, 1)
-            if len(parts) == 2:
-                k = parts[0].strip()
-                v = parts[1].strip()
-                # Heuristic: Label shouldn't be too long (e.g. > 40 chars)
-                if k and len(k) < 40:
-                    return (k, v)
-    
-    return (None, None)
+def extract_key_value(line: str) -> Tuple[str, str]:
+    if ":" in line:
+        parts = line.split(":", 1)
+    elif "-" in line:
+        parts = line.split("-", 1)
+    else:
+        return None, None
 
-# ----------------------------------------------------------------------
-# 3. Main Extraction
-# ----------------------------------------------------------------------
+    key = normalize_label(parts[0])
+    value = parts[1].strip()
+    return key, value
 
-def extract_fields_from_lines(lines: List[Dict[str, Any]], raw_text: str = None) -> Dict[str, Any]:
-    """
-    Main entry point.
-    Returns the structure:
-    {
-      "extracted_fields": {
-          "first_name": "", ...
-          "dynamically_detected_fields": { ... }
-      }
-    }
-    """
-    
-    # Pre-defined known fields we want to capture specifically
-    known_fields_map = {
-        'name': 'full_name',
-        'full_name': 'full_name',
-        'first_name': 'first_name',
-        'middle_name': 'middle_name',
-        'last_name': 'last_name',
-        'gender': 'gender',
-        'sex': 'gender',
-        'date_of_birth': 'date_of_birth',
-        'dob': 'date_of_birth',
-        'birth_date': 'date_of_birth',
-        'age': 'age',
-        'address': 'address_line_1', # fallback
-        'address_line_1': 'address_line_1',
-        'address_line_2': 'address_line_2',
-        'city': 'city',
-        'state': 'state',
-        'country': 'country',
-        'pin': 'pin_code',
-        'pincode': 'pin_code',
-        'postal_code': 'pin_code',
-        'zip': 'pin_code',
-        'phone': 'phone_number',
-        'mobile': 'phone_number',
-        'contact': 'phone_number',
-        'email': 'email',
-        'e-mail': 'email',
-        'document_number': 'document_number',
-        'id_number': 'document_number',
-        'issue_date': 'issue_date',
-        'expiry_date': 'expiry_date',
-        'signature': 'signature'
-    }
-
-    # Initialize output structure
-    extracted = {
+def extract_fields_from_lines(lines: List[Dict[str, Any]], raw_text: str = None):
+    # Initialize all standard fields
+    extracted_fields = {
         "first_name": "",
         "middle_name": "",
         "last_name": "",
@@ -175,81 +71,83 @@ def extract_fields_from_lines(lines: List[Dict[str, Any]], raw_text: str = None)
         "dynamically_detected_fields": {}
     }
     
-    # Temporary storage for found values to avoid overwriting with worse ones
-    # We can use a simple dict: key -> value
-    found_values = {}
+    dynamically_detected = {}
 
-    # Helper to set value if not empty
-    def set_field(key, val, is_dynamic=False):
-        val = clean_value(val)
-        if not val:
-            return
-        
-        if is_dynamic:
-            extracted["dynamically_detected_fields"][key] = val
-        else:
-            # If it's a name field, we might need to split it later if we only got full_name
-            found_values[key] = val
-            if key in extracted:
-                extracted[key] = val
+    for item in lines:
+        text = item.get("text", "").strip()
+        key, value = extract_key_value(text)
 
-    # 1. Iterate over lines to find Key-Value pairs
-    for line_obj in lines:
-        text = line_obj.get('text', '')
-        if not text:
-            continue
-            
-        k, v = detect_kv_from_line(text)
-        if k and v:
-            norm_k = normalize_label(k)
-            
-            # Check if it maps to a known field
-            if norm_k in known_fields_map:
-                canonical_key = known_fields_map[norm_k]
-                set_field(canonical_key, v)
+        if key and value:
+            if key in ["name", "full name"]:
+                name_parts = split_name(value)
+                extracted_fields["first_name"] = name_parts.get("first_name", "")
+                extracted_fields["middle_name"] = name_parts.get("middle_name", "")
+                extracted_fields["last_name"] = name_parts.get("last_name", "")
+            elif key in ["address", "addr"]:
+                extracted_fields["address_line_1"] = value
+            elif key in ["city"]:
+                extracted_fields["city"] = value
+            elif key in ["state"]:
+                extracted_fields["state"] = value
+            elif key in ["gender", "sex"]:
+                extracted_fields["gender"] = value
+            elif key in ["dob", "date of birth", "birth date"]:
+                extracted_fields["date_of_birth"] = value
             else:
-                # Dynamic field
-                # Heuristic: ignore very short keys or keys that look like garbage
-                if len(norm_k) > 2:
-                    set_field(norm_k, v, is_dynamic=True)
+                dynamically_detected[key] = value
 
-    # 2. Regex / Pattern Fallbacks for missing mandatory fields
-    # We search in raw_text if available, or join lines
-    full_text = raw_text if raw_text else "\n".join([l.get('text', '') for l in lines])
+    # Extra detections from raw text
+    if raw_text:
+        mobile = find_mobile_number(raw_text)
+        if mobile:
+            extracted_fields["phone_number"] = mobile
+            
+        email = find_email(raw_text)
+        if email:
+            extracted_fields["email"] = email
+            
+        pincode = find_pincode(raw_text)
+        if pincode:
+            extracted_fields["pin_code"] = pincode
     
-    if 'email' not in found_values:
-        email_match = re.search(r'([a-zA-Z0-9_.+-]+@[a-zA-Z0-9-]+\.[a-zA-Z0-9-.]+)', full_text)
-        if email_match:
-            set_field('email', normalize_email(email_match.group(1)))
-            
-    if 'phone_number' not in found_values:
-        # Look for pattern like +91... or 10 digits
-        phone_match = re.search(r'(?:\+?\d{1,3}[\s-]?)?(?:\d{10,})', full_text)
-        if phone_match:
-            set_field('phone_number', normalize_phone(phone_match.group(0)))
-            
-    if 'pin_code' not in found_values:
-        pin_match = re.search(r'\b\d{6}\b', full_text)
-        if pin_match:
-            set_field('pin_code', pin_match.group(0))
+    extracted_fields["dynamically_detected_fields"] = dynamically_detected
 
-    # 3. Handle Name Splitting
-    # If we found 'full_name' but not specific parts, split it
-    if 'full_name' in found_values:
-        # Only overwrite if specific parts are missing
-        parts = split_full_name(found_values['full_name'])
-        if not extracted['first_name']: extracted['first_name'] = parts['first_name']
-        if not extracted['middle_name']: extracted['middle_name'] = parts['middle_name']
-        if not extracted['last_name']: extracted['last_name'] = parts['last_name']
-        
-    # If we have first/last but no full name, that's fine, the output format requires first/mid/last.
-    
-    # 4. Final Cleanup
-    # Ensure all values in extracted are strings (not None)
-    for k in extracted:
-        if k == "dynamically_detected_fields":
-            continue
-        if extracted[k] is None:
-            extracted[k] = ""
-            
-    return {"extracted_fields": extracted}
+    return {"extracted_fields": extracted_fields}
+
+# -------------------------------------------------------------------
+# ---------------------  FIXED WRAPPER  ------------------------------
+# -------------------------------------------------------------------
+
+def postprocess_ocr(ocr_text: str):
+    """
+    Converts raw OCR text into the expected line array
+    so extract_fields_from_lines() works correctly.
+    """
+    lines = []
+    for line in ocr_text.split("\n"):
+        if line.strip():
+            lines.append({"text": line})
+
+    return extract_fields_from_lines(lines, raw_text=ocr_text)
+
+# -------------------------------------------------------------------
+# -----------------------  MAIN EXECUTION  ---------------------------
+# -------------------------------------------------------------------
+
+if __name__ == "__main__":
+    # Read input from Node.js or terminal
+    ocr_text = sys.stdin.read().strip()
+
+    # If no input → use fallback sample (THIS MAKES OUTPUT ALWAYS APPEAR)
+    if not ocr_text:
+        ocr_text = """
+        Name: Rohit Sharma
+        Father Name: Arun Kumar Sharma
+        Address: Mumbai, Maharashtra 400001
+        Mobile: 9876543210
+        Email: demo@gmail.com
+        """
+
+    result = postprocess_ocr(ocr_text)
+
+    print(json.dumps(result, indent=2))

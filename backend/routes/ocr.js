@@ -23,7 +23,7 @@ router.post('/extract', upload.single('document'), (req, res) => {
     }
 
     const filePath = path.resolve(req.file.path);
-    const scriptPath = path.resolve(__dirname, '../../ai-models/ocr_service.py');
+    const scriptPath = path.resolve(__dirname, '../../ai-models/ocr_service_easyocr.py');
 
     console.log(`Processing file: ${filePath}`);
     console.log(`Using script: ${scriptPath}`);
@@ -44,6 +44,12 @@ router.post('/extract', upload.single('document'), (req, res) => {
 
     pythonProcess.on('close', (code) => {
         console.log(`Child process exited with code ${code}`);
+
+        // Log stderr for debugging (warnings, debug messages)
+        if (errorString) {
+            console.log('Python stderr:', errorString);
+        }
+
         if (code !== 0) {
             console.error(`OCR Error: ${errorString}`);
             return res.status(500).json({ error: 'OCR processing failed', details: errorString });
@@ -70,9 +76,12 @@ router.post('/extract', upload.single('document'), (req, res) => {
                 throw new Error('No valid JSON output from OCR script');
             }
 
+            console.log('OCR Result:', JSON.stringify(jsonResult, null, 2));
+
             res.json({ success: true, data: jsonResult, imagePath: `/uploads/${req.file.filename}` });
         } catch (err) {
             console.error('JSON Parse Error:', err);
+            console.error('Raw output:', dataString);
             res.status(500).json({ error: 'Failed to parse OCR output', raw: dataString });
         }
     });
