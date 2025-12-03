@@ -93,6 +93,17 @@ def extract_fields_from_lines(lines: List[Dict[str, Any]], raw_text: str = None)
                 extracted_fields["gender"] = value
             elif key in ["dob", "date of birth", "birth date"]:
                 extracted_fields["date_of_birth"] = value
+            elif key in ["country"]:
+                extracted_fields["country"] = value
+            elif key in ["phone", "phone number", "mobile", "contact"]:
+                extracted_fields["phone_number"] = value
+            elif key in ["email", "e mail"]:
+                extracted_fields["email"] = value
+            elif key in ["pin", "pin code", "pincode", "postal code", "zip"]:
+                extracted_fields["pin_code"] = value
+            elif key in ["age"]:
+                # Age is not a standard field, put in dynamic
+                dynamically_detected[key] = value
             else:
                 dynamically_detected[key] = value
 
