@@ -108,66 +108,6 @@ MossipIITM/
 
 ## API Endpoints
 
-### OCR Extraction
-**POST** `/api/ocr/extract`
-
-Request:
-```javascript
-// multipart/form-data
-{ document: File }  // Image or PDF
-```
-
-Response:
-```json
-{
-  "success": true,
-  "data": {
-    "text": "Name: John Smith\nEmail: john@example.com\n...",
-    "fields": {
-      "name": "John Smith",
-      "email": "john@example.com",
-      "phone": "555-1234"
-    },
-    "fields_meta": {
-      "name_confidence": 85.0,
-      "email_confidence": 95.0
-    },
-    "confidence": 85.0
-  },
-  "filePath": "/uploads/1764840301960-sample.png",
-  "fileType": "image/png"
-}
-```
-
-### Verification
-**POST** `/api/verify`
-
-Request:
-```json
-{
-  "ocrData": { "name": "John Smith", "email": "john@example.com" },
-  "userData": { "name": "John Smith", "email": "john.smith@example.com" }
-}
-```
-
-Response:
-```json
-{
-  "results": [
-    {
-      "field": "name",
-      "ocrValue": "John Smith",
-      "userValue": "John Smith",
-      "similarity": 100.0,
-      "ocr_confidence": 85.0,
-      "combinedScore": 100.0,
-      "status": "Match",
-      "notes": ""
-    }
-  ],
-  "averageConfidence": 95.0
-}
-```
 
 ## Extracted Fields
 
