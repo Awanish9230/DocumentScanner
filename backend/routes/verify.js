@@ -16,6 +16,10 @@ router.post('/', (req, res) => {
     const ocrJson = JSON.stringify(ocrData);
     const userJson = JSON.stringify(userData);
 
+    console.log('Verification request:');
+    console.log('OCR Data:', ocrJson.substring(0, 100) + '...');
+    console.log('User Data:', userJson.substring(0, 100) + '...');
+
     const pythonProcess = spawn('python', [scriptPath, '--ocr', ocrJson, '--user', userJson]);
 
     let dataString = '';
@@ -27,64 +31,65 @@ router.post('/', (req, res) => {
 
     pythonProcess.stderr.on('data', (data) => {
         errorString += data.toString();
+        console.error('Python stderr:', data.toString());
     });
 
     pythonProcess.on('close', (code) => {
+        console.log(`Verification process exit code: ${code}`);
+        
         if (code !== 0) {
             console.error(`Verification Script Error: ${errorString}`);
-            return res.status(500).json({ error: 'Verification failed', details: errorString });
+            return res.status(500).json({ 
+                error: 'Verification failed', 
+                details: errorString,
+                results: [],
+                averageConfidence: 0
+            });
         }
 
         try {
+            console.log('Raw verification response:', dataString.substring(0, 200) + '...');
             const result = JSON.parse(dataString);
 
-            // Transform the verification_result structure to match frontend expectations
-            const verificationResult = result.verification_result || {};
-            const results = [];
-
-            // Process standard fields
-            for (const [field, data] of Object.entries(verificationResult)) {
-                if (field === 'dynamic_field_results' || field === 'overall_accuracy' ||
-                    field.startsWith('fields_')) {
-                    continue; // Skip metadata fields
-                }
-
-                results.push({
-                    field: field,
-                    status: data.match_status === 'match' ? 'Match' :
-                        data.match_status === 'partial_match' ? 'Partial Match' : 'Mismatch',
-                    similarity: data.confidence_score || 0,
-                    ocrValue: data.ocr_value || '',
-                    userValue: data.user_value || '',
-                    ocr_confidence: 85, // Default OCR confidence from EasyOCR
-                    combinedScore: data.confidence_score || 0
+            // Check for errors in result
+            if (result.error) {
+                console.error('Verification error:', result.error);
+                return res.status(400).json({ 
+                    error: result.error,
+                    results: [],
+                    averageConfidence: 0
                 });
             }
 
-            // Process dynamic fields
-            if (verificationResult.dynamic_field_results) {
-                for (const [field, data] of Object.entries(verificationResult.dynamic_field_results)) {
-                    results.push({
-                        field: field,
-                        status: data.match_status === 'match' ? 'Match' :
-                            data.match_status === 'partial_match' ? 'Partial Match' : 'Mismatch',
-                        similarity: data.confidence_score || 0,
-                        ocrValue: data.ocr_value || '',
-                        userValue: data.user_value || '',
-                        ocr_confidence: 85,
-                        combinedScore: data.confidence_score || 0
-                    });
-                }
-            }
-
+            // Return the verification results as is from the Python script
             res.json({
-                results: results,
-                averageConfidence: verificationResult.overall_accuracy || 0
+                results: result.results || [],
+                averageConfidence: result.averageConfidence || 0,
+                totalFields: result.totalFields || 0,
+                matchedFields: result.matchedFields || 0,
+                partialMatchFields: result.partialMatchFields || 0,
+                mismatchFields: result.mismatchFields || 0
             });
         } catch (err) {
             console.error('JSON Parse Error:', err);
-            res.status(500).json({ error: 'Failed to parse verification output', raw: dataString });
+            console.error('Raw output:', dataString);
+            res.status(500).json({ 
+                error: 'Failed to parse verification output', 
+                raw: dataString.substring(0, 500),
+                results: [],
+                averageConfidence: 0
+            });
         }
+    });
+
+    pythonProcess.on('error', (err) => {
+        console.error('Process error:', err);
+        res.status(500).json({ 
+            error: 'Failed to start verification process', 
+            details: err.message,
+            results: [],
+            averageConfidence: 0
+        });
     });
 });
 

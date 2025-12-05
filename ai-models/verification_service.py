@@ -1,150 +1,173 @@
-import sys
+"""
+Verification service - compares OCR extracted data with user-edited data.
+Calculates similarity scores using Levenshtein distance.
+"""
 import json
-import difflib
+import sys
+import argparse
+from typing import Dict, Any, List, Tuple
+from difflib import SequenceMatcher
 
-def normalize_string(s):
-    if s is None:
-        return ""
-    return str(s).strip().lower()
-
-def calculate_confidence(ocr_val, user_val):
-    """
-    Calculate match status and confidence score.
-    Returns: (match_status, confidence_score)
-    """
-    o = normalize_string(ocr_val)
-    u = normalize_string(user_val)
-
-    if not o and not u:
-        return "not_found", 0
+def levenshtein_distance(s1: str, s2: str) -> int:
+    """Calculate Levenshtein distance between two strings."""
+    if len(s1) < len(s2):
+        return levenshtein_distance(s2, s1)
     
-    if u and not o:
-        return "not_found", 0 # User added, OCR missed
+    if len(s2) == 0:
+        return len(s1)
     
-    if o and not u:
-        # OCR found something, user didn't input. 
-        # Technically a mismatch or just 'ocr_only'. 
-        # Requirement says: "If OCR contains fields not in user input: Still include them with user_value: null."
-        # We treat this as mismatch or low confidence match? 
-        # Let's say mismatch for now as they don't match.
-        return "mismatch", 0
+    previous_row = range(len(s2) + 1)
+    for i, c1 in enumerate(s1):
+        current_row = [i + 1]
+        for j, c2 in enumerate(s2):
+            insertions = previous_row[j + 1] + 1
+            deletions = current_row[j] + 1
+            substitutions = previous_row[j] + (c1 != c2)
+            current_row.append(min(insertions, deletions, substitutions))
+        previous_row = current_row
+    
+    return previous_row[-1]
 
-    # Both present, calculate similarity
-    matcher = difflib.SequenceMatcher(None, o, u)
-    ratio = matcher.ratio() # 0 to 1
-    score = round(ratio * 100, 2)
+def calculate_similarity(ocr_value: str, user_value: str) -> float:
+    """
+    Calculate similarity percentage between OCR and user values.
+    Uses Levenshtein distance.
+    """
+    if not ocr_value and not user_value:
+        return 100.0
+    
+    if not ocr_value or not user_value:
+        return 0.0
+    
+    # Normalize values
+    ocr_norm = str(ocr_value).lower().strip()
+    user_norm = str(user_value).lower().strip()
+    
+    if ocr_norm == user_norm:
+        return 100.0
+    
+    # Calculate using SequenceMatcher (more efficient)
+    matcher = SequenceMatcher(None, ocr_norm, user_norm)
+    ratio = matcher.ratio() * 100
+    
+    return round(ratio, 2)
 
-    if score >= 90:
-        status = "match"
-    elif score >= 50:
-        status = "partial_match"
+def get_match_status(similarity: float) -> str:
+    """Determine match status based on similarity score."""
+    if similarity >= 95:
+        return 'Match'
+    elif similarity >= 75:
+        return 'Partial Match'
     else:
-        status = "mismatch"
-        
-    return status, score
+        return 'Mismatch'
 
-def verify(ocr_data, user_data):
+def verify_documents(ocr_data: Dict[str, Any], user_data: Dict[str, Any]) -> Dict[str, Any]:
     """
-    Compare OCR extracted fields with User filled fields.
+    Compare OCR extracted data with user-edited data.
+    
+    Args:
+        ocr_data: Dictionary with extracted OCR values. Can be:
+                  - Full OCR response: {text, fields, fields_meta, confidence}
+                  - Just fields dictionary: {field1, field2, ...}
+        user_data: Dictionary with user-edited values {field1, field2, ...}
+    
+    Returns:
+        Dictionary with verification results
     """
+    results = []
+    total_confidence = 0
+    field_count = 0
     
-    # Flatten OCR data for easier comparison
-    # Structure is { "extracted_fields": { ..., "dynamically_detected_fields": {...} } }
-    ocr_flat = {}
-    if "extracted_fields" in ocr_data:
-        base = ocr_data["extracted_fields"]
-        for k, v in base.items():
-            if k == "dynamically_detected_fields":
-                for dk, dv in v.items():
-                    ocr_flat[dk] = dv
-            else:
-                ocr_flat[k] = v
-    else:
-        # Fallback if structure is different
-        ocr_flat = ocr_data
-
-    # User data is likely flat
-    user_flat = user_data
-
-    # Collect all unique keys
-    all_keys = set(ocr_flat.keys()) | set(user_flat.keys())
+    # Metadata keys to ignore when comparing
+    metadata_keys = {'text', 'fields', 'fields_meta', 'confidence', 'raw_lines', 'error'}
     
-    verification_result = {}
-    dynamic_field_results = {}
-    
-    match_count = 0
-    mismatch_count = 0
-    partial_count = 0
-    not_found_count = 0
-    total_fields = 0
-
-    # Pre-defined standard fields to keep in the main block
-    standard_fields = {
-        "first_name", "middle_name", "last_name", "gender", "date_of_birth",
-        "address_line_1", "address_line_2", "city", "state", "pin_code",
-        "country", "phone_number", "email"
-    }
-
-    for key in all_keys:
-        ocr_val = ocr_flat.get(key, None)
-        user_val = user_flat.get(key, None)
-        
-        status, score = calculate_confidence(ocr_val, user_val)
-        
-        result_obj = {
-            "ocr_value": ocr_val,
-            "user_value": user_val,
-            "match_status": status,
-            "confidence_score": score
-        }
-        
-        # Stats
-        if status == "match": match_count += 1
-        elif status == "mismatch": mismatch_count += 1
-        elif status == "partial_match": partial_count += 1
-        elif status == "not_found": not_found_count += 1
-        total_fields += 1
-
-        if key in standard_fields:
-            verification_result[key] = result_obj
+    # Extract actual form fields from OCR data
+    # If ocr_data contains a 'fields' key, use that; otherwise filter out metadata
+    if isinstance(ocr_data, dict) and 'fields' in ocr_data:
+        # Full OCR response object
+        ocr_fields_dict = ocr_data.get('fields', {})
+        if isinstance(ocr_fields_dict, dict):
+            ocr_compare = ocr_fields_dict
         else:
-            dynamic_field_results[key] = result_obj
-
-    # Calculate overall accuracy
-    # We can define accuracy as (matches + partials*0.5) / total
-    if total_fields > 0:
-        accuracy = ((match_count * 100) + (partial_count * 50)) / total_fields
+            ocr_compare = {}
     else:
-        accuracy = 0
-
-    final_output = {
-        "verification_result": {
-            **verification_result,
-            "dynamic_field_results": dynamic_field_results,
-            "overall_accuracy": round(accuracy, 2),
-            "fields_matched": match_count,
-            "fields_mismatched": mismatch_count,
-            "fields_partial": partial_count,
-            "fields_not_found": not_found_count
-        }
+        # Already just fields, or direct comparison
+        ocr_compare = {k: v for k, v in ocr_data.items() if k not in metadata_keys and not isinstance(v, (dict, list))}
+    
+    # Get all unique field names from actual fields only
+    all_fields = set(ocr_compare.keys()) | set(user_data.keys())
+    
+    for field in sorted(all_fields):
+        ocr_value = ocr_compare.get(field, '')
+        user_value = user_data.get(field, '')
+        
+        # Skip empty fields
+        if not ocr_value and not user_value:
+            continue
+        
+        # Calculate similarity
+        similarity = calculate_similarity(ocr_value, user_value)
+        
+        # Get match status
+        status = get_match_status(similarity)
+        
+        # Use OCR extraction confidence (default 80%)
+        ocr_confidence = 80.0
+        
+        # Combined score: average of similarity and OCR confidence
+        combined_score = (similarity + ocr_confidence) / 2
+        
+        results.append({
+            'field': field,
+            'ocrValue': str(ocr_value),
+            'userValue': str(user_value),
+            'similarity': similarity,
+            'ocr_confidence': ocr_confidence,
+            'combinedScore': combined_score,
+            'status': status,
+            'notes': ''
+        })
+        
+        total_confidence += combined_score
+        field_count += 1
+    
+    # Calculate average confidence
+    average_confidence = (total_confidence / field_count) if field_count > 0 else 0
+    average_confidence = round(average_confidence, 2)
+    
+    return {
+        'results': results,
+        'averageConfidence': average_confidence,
+        'totalFields': field_count,
+        'matchedFields': len([r for r in results if r['status'] == 'Match']),
+        'partialMatchFields': len([r for r in results if r['status'] == 'Partial Match']),
+        'mismatchFields': len([r for r in results if r['status'] == 'Mismatch'])
     }
-    
-    return final_output
 
-if __name__ == "__main__":
-    import argparse
+if __name__ == '__main__':
+    parser = argparse.ArgumentParser(description='Verify OCR data against user data')
+    parser.add_argument('--ocr', type=str, required=True, help='OCR data as JSON string')
+    parser.add_argument('--user', type=str, required=True, help='User data as JSON string')
     
-    parser = argparse.ArgumentParser()
-    parser.add_argument('--ocr', type=str, required=True, help='OCR JSON string')
-    parser.add_argument('--user', type=str, required=True, help='User JSON string')
     args = parser.parse_args()
     
     try:
-        ocr_json = json.loads(args.ocr)
-        user_json = json.loads(args.user)
+        ocr_data = json.loads(args.ocr)
+        user_data = json.loads(args.user)
         
-        result = verify(ocr_json, user_json)
-        print(json.dumps(result))
+        # Ensure they're dictionaries
+        if not isinstance(ocr_data, dict):
+            ocr_data = {'value': ocr_data}
+        if not isinstance(user_data, dict):
+            user_data = {'value': user_data}
+        
+        result = verify_documents(ocr_data, user_data)
+        print(json.dumps(result, ensure_ascii=False))
     except Exception as e:
-        print(json.dumps({"error": str(e)}))
+        error_response = {
+            'error': str(e),
+            'results': [],
+            'averageConfidence': 0
+        }
+        print(json.dumps(error_response))
         sys.exit(1)

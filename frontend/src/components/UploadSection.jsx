@@ -5,6 +5,7 @@ const UploadSection = ({ onUploadSuccess }) => {
     const [loading, setLoading] = useState(false);
     const [error, setError] = useState(null);
     const [dragActive, setDragActive] = useState(false);
+    const [documentType, setDocumentType] = useState('printed'); // 'printed' or 'handwritten'
 
     const handleFileChange = (e) => {
         setFile(e.target.files[0]);
@@ -40,6 +41,7 @@ const UploadSection = ({ onUploadSuccess }) => {
         setLoading(true);
         const formData = new FormData();
         formData.append('document', file);
+        formData.append('documentType', documentType); // Send document type to backend
 
         try {
             const response = await fetch('http://localhost:5000/api/ocr/extract', {
@@ -54,8 +56,9 @@ const UploadSection = ({ onUploadSuccess }) => {
             }
 
             // Extract the fields from the nested structure
-            const extractedFields = data.data?.extracted_fields || data.data || {};
-            onUploadSuccess(extractedFields, data.imagePath);
+            // Backend returns: { success, data: { text, fields, fields_meta, ... }, filePath, fileType }
+            const extractedData = data.data || {};
+            onUploadSuccess(extractedData, data.filePath);
         } catch (err) {
             setError(err.message);
         } finally {
@@ -118,6 +121,38 @@ const UploadSection = ({ onUploadSuccess }) => {
                     <div className="text-center md:text-left mb-8">
                         <h2 className="text-3xl font-bold text-gray-800 mb-3">Get Started in Seconds</h2>
                         <p className="text-gray-600">Upload your document and let AI do the magic</p>
+                    </div>
+
+                    {/* Document Type Toggle */}
+                    <div className="mb-8 flex flex-col items-center">
+                        <label className="text-sm font-semibold text-gray-700 mb-3">📝 Document Type</label>
+                        <div className="relative inline-flex items-center bg-gray-100 rounded-full p-1.5 shadow-inner">
+                            <button
+                                type="button"
+                                onClick={() => setDocumentType('printed')}
+                                className={`relative px-6 py-2.5 rounded-full font-semibold text-sm transition-all duration-300 ${documentType === 'printed'
+                                        ? 'bg-gradient-to-r from-purple-500 to-pink-500 text-white shadow-lg scale-105'
+                                        : 'text-gray-600 hover:text-gray-800'
+                                    }`}
+                            >
+                                🖨️ Printed Text
+                            </button>
+                            <button
+                                type="button"
+                                onClick={() => setDocumentType('handwritten')}
+                                className={`relative px-6 py-2.5 rounded-full font-semibold text-sm transition-all duration-300 ${documentType === 'handwritten'
+                                        ? 'bg-gradient-to-r from-purple-500 to-pink-500 text-white shadow-lg scale-105'
+                                        : 'text-gray-600 hover:text-gray-800'
+                                    }`}
+                            >
+                                ✍️ Handwritten
+                            </button>
+                        </div>
+                        <p className="text-xs text-gray-500 mt-2">
+                            {documentType === 'printed'
+                                ? 'Best for typed documents, forms, and printed text'
+                                : 'Optimized for handwritten notes and signatures'}
+                        </p>
                     </div>
 
                     <div

@@ -4,3 +4,9 @@ pillow
 opencv-python
 numpy
 pytesseract
+pdf2image
+pymupdf
+datasets
+jiwer
+scikit-learn
+pandas
