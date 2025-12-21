@@ -1,19 +1,12 @@
-/* 1. Google Fonts */
-
 @import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800;900&display=swap');
 @import "tailwindcss";
-/* 2. Tailwind directives */
-/* @tailwind base;
-@tailwind components;
-@tailwind utilities; */
 
-/* 3. Custom styles */
 @layer base {
   body {
-    background: #ffffff; /* FULL WHITE BACKGROUND */
+    background: #ffffff; 
     font-family: 'Inter', sans-serif;
     min-height: 100vh;
-    color: #1a1a1a; /* dark text */
+    color: #1a1a1a; 
   }
 }
 
